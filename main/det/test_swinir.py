@@ -126,7 +126,7 @@ def main(args) -> None:
                     save_image(val_res_list[idx], img_name)
                     
                     val_pred_box = draw_box(val_res_list[idx], val_pred_list[idx],
-                                            score_threshold=0.6, fontsize=0.7, split_acc=True)
+                                            score_threshold=0.8, fontsize=0.7, split_acc=True)
                     box_name = os.path.splitext(os.path.join(box_dir, basename))[0] + ".png"
                     save_image(val_pred_box, box_name)
             

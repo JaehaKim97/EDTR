@@ -114,7 +114,7 @@ def main(args) -> None:
                 for idx, basename in enumerate(val_path_list):
                     basename = os.path.basename(basename)
                     val_pred_box = draw_box(val_inp_list[idx], val_pred_list[idx],
-                                            score_threshold=0.6, fontsize=0.7, split_acc=True)
+                                            score_threshold=0.8, fontsize=0.7, split_acc=True)
                     pred_box_name = os.path.splitext(os.path.join(pred_box_dir, basename))[0] + ".png"
                     save_image(val_pred_box, pred_box_name)
                     
