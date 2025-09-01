@@ -1,0 +1,50 @@
+model:
+  clsnet:
+    target: model.resnet.ResNet
+    params:
+      type: 18
+      num_classes: 200
+
+dataset:
+  train:
+    target: datasets.classification.DegradedClassificationDataset
+    params:
+      root: datasets/source/CUB200/train
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+      gt_size: 576
+      out_size: 512
+      hflip: true
+      rotation: false
+      crop_type: random
+      blur_kernel_size: 41
+      kernel_list: ['iso', 'aniso']
+      kernel_prob: [0.5, 0.5]
+      blur_sigma: [0.1, 8]
+      downsample_range: [1, 16]
+      noise_range: [0, 10]
+      jpeg_range: [50, 100]
+  val:
+    target: datasets.classification.PairedClassificationDataset
+    params:
+      root: datasets/source/CUB200/val-deg
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+
+train:
+  seed: 123
+  precision: ~ # fp16
+  exp_dir: experiments/cls/cub200/001_lq
+  resume_clsnet: ResNet18_Weights.IMAGENET1K_V1
+  strict_load: false
+  learning_rate: 1e-2
+  batch_size: 32
+  num_workers: 16
+  train_steps: 20000
+  log_every: 50
+  ckpt_every: 10000
+  image_every: 1000
+val:
+  batch_size: 32
+  num_workers: 16
+  val_every: 1000

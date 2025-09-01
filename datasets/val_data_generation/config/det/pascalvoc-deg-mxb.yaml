@@ -1,0 +1,26 @@
+dataset:  
+  val:
+    target: datasets.detection.DegradedDetectionDataset
+    params:
+      root: datasets/source/VOC
+      year: '2012'
+      image_set: val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+      gt_size: 512
+      out_size: 512
+      hflip: false
+      rotation: false
+      crop_type: none
+      blur_kernel_size: 41
+      kernel_list: ['iso', 'aniso']
+      kernel_prob: [0.5, 0.5]
+      blur_sigma: [0.1, 8]
+      downsample_range: [1, 16]
+      noise_range: [0, 10]
+      jpeg_range: [50, 100]
+
+val:
+  exp_dir: experiments/det/voc2012/pascalvoc-det-deg
+  batch_size: 1
+  num_workers: 16

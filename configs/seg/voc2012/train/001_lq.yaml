@@ -1,0 +1,57 @@
+model:
+  segnet:
+    target: model.deeplabv3.deeplabv3_mobilenet_v3_large
+    params:
+      weights_backbone: MobileNet_V3_Large_Weights.IMAGENET1K_V1
+      num_classes: 21
+      aux_loss: false
+
+dataset:
+  train:
+    target: datasets.segmentation.DegradedSegmentationDataset
+    params:
+      root: datasets/source/VOC
+      year: '2012'
+      image_set: train
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+      gt_size: 560
+      resize_range: [0.5, 2.0]
+      out_size: 512
+      crop_type: random
+      hflip: true
+      rotation: false
+      blur_kernel_size: 41
+      kernel_list: ['iso', 'aniso']
+      kernel_prob: [0.5, 0.5]
+      blur_sigma: [0.1, 8]
+      downsample_range: [1, 16]
+      noise_range: [0, 10]
+      jpeg_range: [50, 100]
+  val:
+    target: datasets.segmentation.PairedSegmentationDataset
+    params:
+      root: datasets/source/VOC
+      path: JPEGImagesSeg-deg
+      year: '2012'
+      image_set: val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+
+train:
+  seed: 123
+  precision: ~ # fp16
+  exp_dir: experiments/seg/voc2012/001_lq
+  resume_segnet: ~
+  strict_load: false
+  learning_rate: 2e-2
+  batch_size: 16
+  num_workers: 16
+  train_steps: 20000
+  log_every: 50
+  ckpt_every: 10000
+  image_every: 1000
+val:
+  batch_size: -1  # Automatically set to the number of available GPUs
+  num_workers: 16
+  val_every: 1000

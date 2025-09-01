@@ -1,0 +1,26 @@
+model:
+  detnet:
+    target: model.faster_rcnn.fasterrcnn_mobilenet_v3_large_fpn
+    params:
+      weights_backbone: MobileNet_V3_Large_Weights.IMAGENET1K_V1
+      num_classes: 21
+
+dataset:  
+  val:
+    target: datasets.detection.PairedDetectionDataset
+    params:
+      root: datasets/source/VOC
+      path: JPEGImagesDet-deg
+      gt_size: 512
+      year: '2012'
+      image_set: val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+
+test:
+  precision: fp16
+  exp_dir: experiments/det/voc2012/001_lq
+  resume_detnet: ~
+  strict_load: true
+  batch_size: 1
+  num_workers: 16

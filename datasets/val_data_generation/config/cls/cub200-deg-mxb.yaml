@@ -1,0 +1,24 @@
+dataset:  
+  val:
+    target: datasets.classification.DegradedClassificationDataset
+    params:
+      root: datasets/source/CUB200/val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+      gt_size: 576
+      out_size: 512
+      hflip: false
+      rotation: false
+      crop_type: center
+      blur_kernel_size: 41
+      kernel_list: ['iso', 'aniso']
+      kernel_prob: [0.5, 0.5]
+      blur_sigma: [0.1, 8]
+      downsample_range: [1, 16]
+      noise_range: [0, 10]
+      jpeg_range: [50, 100]
+
+val:
+  exp_dir: experiments/cls/cub200/cub200-deg
+  batch_size: 1
+  num_workers: 16

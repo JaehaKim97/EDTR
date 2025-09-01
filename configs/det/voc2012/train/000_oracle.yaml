@@ -1,0 +1,58 @@
+model:
+  detnet:
+    target: model.faster_rcnn.fasterrcnn_mobilenet_v3_large_fpn
+    params:
+      weights_backbone: MobileNet_V3_Large_Weights.IMAGENET1K_V1
+      num_classes: 21
+
+dataset:
+  use_gt: true
+  train:
+    target: datasets.detection.DegradedDetectionDataset
+    params:
+      root: datasets/source/VOC
+      year: '2012'
+      image_set: train
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+      gt_size: 512
+      out_size: 512
+      hflip: true
+      rotation: false
+      crop_type: none
+      blur_kernel_size: 41
+      kernel_list: ['iso', 'aniso']
+      kernel_prob: [0.5, 0.5]
+      blur_sigma: [0.1, 8]
+      downsample_range: [1, 16]
+      noise_range: [0, 10]
+      jpeg_range: [50, 100]
+  val:
+    target: datasets.detection.PairedDetectionDataset
+    params:
+      root: datasets/source/VOC
+      path: JPEGImagesDet-deg
+      gt_size: 512
+      year: '2012'
+      image_set: val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+
+train:
+  seed: 231
+  precision: ~ # fp16
+  exp_dir: experiments/det/voc2012/000_oracle
+  resume_detnet: ~
+  strict_load: false
+  aspect_ratio_group_factor : 3
+  learning_rate: 2e-2
+  batch_size: 16
+  num_workers: 16
+  train_steps: 10000
+  log_every: 50
+  ckpt_every: 10000
+  image_every: 1000
+val:
+  batch_size: -1  # Automatically set to the number of available GPUs
+  num_workers: 16
+  val_every: 2000

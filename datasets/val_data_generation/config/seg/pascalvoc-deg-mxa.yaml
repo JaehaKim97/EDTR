@@ -1,0 +1,27 @@
+dataset:
+  val:
+    target: datasets.segmentation.DegradedSegmentationDataset
+    params:
+      root: datasets/source/VOC
+      year: '2012'
+      image_set: val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+      gt_size: 560
+      resize_range: ~
+      out_size: ~ #512
+      hflip: false
+      rotation: false
+      crop_type: none
+      blur_kernel_size: ~
+      kernel_list: ~
+      kernel_prob: ~
+      blur_sigma: ~
+      downsample_range: [8, 8]
+      noise_range: ~
+      jpeg_range: [75, 75]
+
+val:
+  exp_dir: experiments/seg/voc2012/pascalvoc-seg-deg-mxa
+  batch_size: 1
+  num_workers: 16

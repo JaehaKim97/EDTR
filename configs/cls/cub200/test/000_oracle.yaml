@@ -1,0 +1,23 @@
+model:
+  clsnet:
+    target: model.resnet.ResNet
+    params:
+      type: 18
+      num_classes: 200
+
+dataset:
+  use_gt: true
+  val:
+    target: datasets.classification.PairedClassificationDataset
+    params:
+      root: datasets/source/CUB200/val-deg
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+
+test:
+  precision: fp16
+  exp_dir: experiments/cls/cub200/000_oracle
+  resume_clsnet: ~
+  strict_load: true
+  batch_size: 32
+  num_workers: 16

@@ -1,0 +1,27 @@
+model:
+  segnet:
+    target: model.deeplabv3.deeplabv3_mobilenet_v3_large
+    params:
+      weights_backbone: MobileNet_V3_Large_Weights.IMAGENET1K_V1
+      num_classes: 21
+      aux_loss: false
+
+dataset:  
+  use_gt: true
+  val:
+    target: datasets.segmentation.PairedSegmentationDataset
+    params:
+      root: datasets/source/VOC
+      path: JPEGImagesSeg-deg
+      year: '2012'
+      image_set: val
+      file_backend_cfg:
+        target: datasets.file_backend.HardDiskBackend
+
+test:
+  precision: fp16
+  exp_dir: experiments/seg/voc2012/000_oracle
+  resume_segnet: ~
+  strict_load: true
+  batch_size: 1
+  num_workers: 16

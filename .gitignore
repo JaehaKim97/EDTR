@@ -1,0 +1,9 @@
+# Large memory files
+experiments
+weights
+datasets/source
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.swp
