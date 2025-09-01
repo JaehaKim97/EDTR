@@ -48,7 +48,7 @@ wget https://huggingface.co/stabilityai/stable-diffusion-2-1-base/resolve/main/v
 We use [CUB200](https://www.kaggle.com/datasets/wenewone/cub2002011?select=CUB_200_2011) dataset for classification, and [VOC2012](https://www.kaggle.com/datasets/gopalbhattrai/pascal-voc-2012-dataset) dataset for segmentation and detection.
 (The download link is not official, but it is from Kaggle, as the official link often works slowly.)
 
-Download the `archive.zip` file by clicking the "Download" button in the upper-right corner, then place it in the `datasets/source` directory. After that, execute the following commands:
+Download the `archive.zip` file by clicking the "Download" button in the upper-right corner and selecting "Download dataset as zip". Then, place it in the `datasets/source/` directory and execute the following commands:
 
 ```shell
 python datasets/preprocess/cub200.py  # for CUB200
@@ -59,15 +59,15 @@ This will automatically extract the zip file and reorganize the dataset to fit o
 
 For evaluation, we use a synthetic degraded image set. You can download the datasets from [here](https://drive.google.com/drive/folders/1T6jIG_7g7bxuXtN0AN4y9hkRdMazopsu?usp=sharing).
 
-Please place the degraded CUB200 dataset at `datasets/source/CUB200/val-deg` and the VOC2012 dataset at `datasets/source/VOC/VOCdevkit/VOC2012/JPEGImages*-deg`.
+Please unzip the file and place the degraded CUB200 dataset at `datasets/source/CUB200/val-deg` and the VOC2012 dataset at `datasets/source/VOC/VOCdevkit/VOC2012/JPEGImages*-deg`.
 
 ## <a name="pretrained_models"></a>:floppy_disk: Pretrained Models
 
 We provide pretrained EDTR models and comparison methods used in our paper. All models are finetuned on task-specific datasets; CUB-200 for classification, and VOC2012 for both segmentation and detection.
 
-Please download the folder and place it in the proper `experiments/` directory. For example, for EDTR model for detection, place the `007_edtr-s4` folder in `experiments/det/voc2012/`.
+Please unzip the file and place it in the proper `experiments/` directory. For example, for EDTR model for detection, place the `007_edtr-s4` folder in `experiments/det/voc2012/`.
 
-:warning: If you want to use the EDTR or DiffBIR models, please download the SwinIR-Pre model first. Its weights are required for both models.
+:warning: *NOTE*: If you want to use the EDTR or DiffBIR models, please download the SwinIR-Pre model first. Its weights are required for both models.
 
 | Model Name | Components | Classification | Segmentation | Detection |
 | :---------: | :----------: | :----------: | :----------: | :----------: |
@@ -92,7 +92,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --main_process_port 4177 main/det/test_
 
 ### Real-world Detection
 
-You need to update the image path in the [config](https://github.com/JaehaKim97/EDTR-READY/blob/821f8dc93f5649701e8d6b96e4152848e4af126f/configs/det/voc2012/test/008_edtr-s4-RW.yaml#L106) to your own image path.
+You need to update the image path in the [config](https://github.com/JaehaKim97/EDTR/blob/b47740fa536688e00dae3aa35f42d0743195c6b4/configs/det/voc2012/test/008_edtr-s4-RW.yaml#L106) to your own image path.
 
 *NOTE*: Since our model has been trained on a relatively smaller dataset (VOC2012 dataset with 5.7k samples) compared to those commonly used in the restoration field, its restoration performance is not yet optimal. We plan to release the EDTR model, trained on a much larger detection dataset (e.g., COCO), as soon as possible!
 
@@ -104,9 +104,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --main_process_port 4177 main/det/real-
 
 Please download the [codeformer_swinir.ckpt](https://huggingface.co/lxq007/DiffBIR-v2/resolve/main/codeformer_swinir.ckpt) and place it in the `weights/` directory.
 
-*NOTE*: Below are the example training commands for EDTR in detection. You can find all kinds of training commands in the [script](script.sh).
-
-*NOTE*: We recommend using a GPU with at least 40GB\*4 or 80GB\*2 of memory due to the large model size.
+*NOTE*: Below are the example training commands for EDTR in detection. You can find all kinds of training commands in the [script](script.sh). We recommend using a GPU setup with at least 40GB\*4 or 80GB\*2 of memory due to the large model size.
 
 1. Training pre-restoration model:
     
