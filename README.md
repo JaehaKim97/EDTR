@@ -69,13 +69,11 @@ Please unzip the file and place it in the proper `experiments/` directory. For e
 
 :warning: *NOTE*: If you want to use the EDTR or DiffBIR models, please download the SwinIR-Pre model first. Its weights are required for both models.
 
-| Model Name | Components | Classification | Segmentation | Detection |
-| :---------: | :----------: | :----------: | :----------: | :----------: |
-| SwinIR-Pre (*Necessary for EDTR, DiffBIR*) | SwinIR | [download](https://drive.google.com/drive/folders/14dwwZcopQZT38cQSmbocWIcTAhTWGQwJ?usp=sharing) | [download](https://drive.google.com/drive/folders/1kV_YR8XhVFvRs8Un0TRd5YX0ozt5rs9x?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1ZMrUN979ztSEICI15ckm2t4osK-eGkhn?usp=sharing) |
-| EDTR | ControlNet, Decoder, Task Network  | [download](https://drive.google.com/drive/folders/1ixzwST08z-GSzHTwlEq4bbLqaNLjuX67?usp=sharing) | [download](https://drive.google.com/drive/folders/1HdB_W4EDKSdF_xAumeYH-08GxsqxtbQR?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1RdoqT-WBW4Ob2Y-5SgNampBqIPuXmw63?usp=sharing) |
-| DiffBIR | ControlNet, Task Network | [download](https://drive.google.com/drive/folders/1Y0oJF5jdfUH7HZTEurS8ebYUmD7O_QWS?usp=sharing) | [download](https://drive.google.com/drive/folders/1-c5PPW4WmsuPI3c-vIjlzYZRN4KakWg8?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1RjF5KgWmWMsEJ1y1Cc7zmpifv3gY5ekY?usp=sharing) |
-| Oracle, No-restoration | Task Network | [download](https://drive.google.com/drive/folders/1gADdsLerO7Fp7JpFg_6eq__D2E2xnfoV?usp=sharing) | [download](https://drive.google.com/drive/folders/1OFcGZ7BCpIQtKExCT_0GlzW0wz2mCxDS?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1cofnSOjRwMjJRNCZdKDEJec213dDK7ti?usp=sharing) |
-| SwinIR-SR4IR | SwinIR, Task Network | [download](https://drive.google.com/drive/folders/10px0ydE1CIlxcoRdjDpLSJSCp4xAPIdn?usp=sharing) | [download](https://drive.google.com/drive/folders/1zu0avJSQYfYKFWbCEtLXq4aCC9M-wH1e?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1_5x-gTgyADNjeQqZh8bHKf_i1OFRX10n?usp=sharing) |
+| Model Name | Classification (CUB200) | Segmentation (VOC2012) | Detection (VOC2012) |
+| :---------: | :----------: | :----------: | :----------: |
+| SwinIR-Pre (*Necessary for EDTR, DiffBIR*) | [download](https://drive.google.com/drive/folders/14dwwZcopQZT38cQSmbocWIcTAhTWGQwJ?usp=sharing) | [download](https://drive.google.com/drive/folders/1kV_YR8XhVFvRs8Un0TRd5YX0ozt5rs9x?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1ZMrUN979ztSEICI15ckm2t4osK-eGkhn?usp=sharing) |
+| EDTR | [download](https://drive.google.com/drive/folders/1ixzwST08z-GSzHTwlEq4bbLqaNLjuX67?usp=sharing) | [download](https://drive.google.com/drive/folders/1HdB_W4EDKSdF_xAumeYH-08GxsqxtbQR?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1RdoqT-WBW4Ob2Y-5SgNampBqIPuXmw63?usp=sharing) |
+| Oracle, No-restoration, SR4IR, DiffBIR | [download](https://drive.google.com/drive/folders/1gADdsLerO7Fp7JpFg_6eq__D2E2xnfoV?usp=sharing) | [download](https://drive.google.com/drive/folders/1OFcGZ7BCpIQtKExCT_0GlzW0wz2mCxDS?usp=sharing)<br> | [download](https://drive.google.com/drive/folders/1cofnSOjRwMjJRNCZdKDEJec213dDK7ti?usp=sharing) |
 
 
 ## <a name="inference"></a>:rocket: Inference
