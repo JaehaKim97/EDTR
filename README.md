@@ -55,7 +55,7 @@ The results will be saved in `results/demo/`.
 
 *NOTE*: You can also use your own images as input, but we recommend keeping the input image size below *512×512*.
 
-The default size of restored images is set so that the longer axis is 512, but you can set a custom upscaling ratio with the `--scale` option.
+By default, restored images are resized so that the longer axis is 512. You can set a custom upscaling ratio with the `--scale` option, but keep in mind that excessive values may introduce artifacts.
 
 If you encounter an out-of-GPU-memory error, try using the `--vae-encoder-tiled` and `--cldm-tiled` options.
 
