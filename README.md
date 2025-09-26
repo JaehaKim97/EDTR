@@ -16,7 +16,7 @@
 
 | Low-quality inputs | EDTR results |
 |---------------|---------------|
-| <img src="inputs/demo/14.png" width="200"/> | <img src="results/demo/box/14.png" width="450"/> |
+| <img src="inputs/demo/56.png" width="200"/> | <img src="results/demo/box/56.png" width="450"/> |
 | <img src="inputs/demo/TEST_01.png" width="200"/> | <img src="results/demo/box/TEST_01.png" width="450"/> |
 | <img src="inputs/demo/TEST_05.png" width="200"/> | <img src="results/demo/box/TEST_05.png" width="450"/> |
 
