@@ -1,5 +1,4 @@
 model:
-  pre_restoration: True
   swinir:
     target: model.swinir.SwinIR
     params:
@@ -87,10 +86,10 @@ model:
         legacy: False
 
   detnet:
-    target: model.faster_rcnn.fasterrcnn_mobilenet_v3_large_fpn
+    target: model.faster_rcnn.fasterrcnn_resnet50_fpn_v2
     params:
-      weights_backbone: MobileNet_V3_Large_Weights.IMAGENET1K_V1
-      num_classes: 21
+      weights_backbone: ResNet50_Weights.IMAGENET1K_V2
+      num_classes: 91
 
   diffusion:
     target: model.gaussian_diffusion.Diffusion
@@ -99,24 +98,17 @@ model:
       linear_end: 0.0120
       timesteps: 1000
 
-dataset:  
+dataset:
+  is_coco: true
   val:
     target: datasets.detection.RealworldDetectionDataset
     params:
-      root: datasets/source/real-world  # Change this path accordingly to your image paths
+      root: ~
       gt_size: 512
       file_backend_cfg:
         target: datasets.file_backend.HardDiskBackend
 
 test:
-  precision: fp16
-  exp_dir: experiments/det/voc2012/008_edtr-s4-RW
-  sd_path: weights/v2-1_512-ema-pruned.ckpt
-  resume_decoder: experiments/release/det/voc2012/007_edtr-s4/checkpoints/decoder_last.pt
-  resume_cldm: experiments/release/det/voc2012/007_edtr-s4/checkpoints/cldm_last.pt
-  resume_swinir: experiments/release/det/voc2012/002_swinir-pre/checkpoints/swinir_last.pt
-  resume_detnet: experiments/release/det/voc2012/007_edtr-s4/checkpoints/detnet_last.pt
-  strict_load: true
   start_timestep: 200
   num_timesteps: 4
   default_prompt: ""

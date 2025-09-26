@@ -1,53 +1,41 @@
-import os
-import sys
-import torch
+import os, sys
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(parent_dir)
+import utils.filter_warning
 
+import torch
 from tqdm import tqdm
 from model import SwinIR
-from einops import rearrange
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from utils.common import instantiate_from_config, copy_opt_file, set_logger, print_attn_type, calculate_psnr_pt
-from utils.detection import GroupedBatchSampler, create_aspect_ratio_groups, collate_fn, list_to_batch
+from utils.common import (
+    instantiate_from_config, load_network,
+    calculate_psnr_pt, wavelet_reconstruction
+)
+from utils.detection import (
+    GroupedBatchSampler, CocoEvaluator, prepare_environment, prepare_batch,
+    create_aspect_ratio_groups, get_coco_api_from_dataset, batch_to_list, 
+    collate_fn, _get_iou_types, draw_box, suppress_stdout
+)
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
-from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate import Accelerator, DataLoaderConfiguration
 from torchvision.utils import make_grid, save_image
 
 
 def main(args) -> None:
-    # Setup accelerator
+    # setup environment
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     cfg = OmegaConf.load(args.config)
-    accelerator = Accelerator(split_batches=True, mixed_precision=cfg.train.precision)
-    set_seed(cfg.train.seed)
+    accelerator = Accelerator(dataloader_config=DataLoaderConfiguration(split_batches=True),
+                              mixed_precision=cfg.train.precision)
     device = accelerator.device
-    
-    def Logging(text, print=True):
-        if accelerator.is_local_main_process:
-            if print:
-                logger.info(text)
-            else:
-                logger.debug(text)
+    dirs, Logging = prepare_environment(__name__, cfg, args, accelerator)
+    exp_dir, ckpt_dir, img_dir = dirs["exp"], dirs["ckpt"], dirs["img"]
+    is_coco = True if cfg.dataset.get('is_coco') else False
 
-    # Set up the experiment folder and logger
-    if accelerator.is_local_main_process:
-        exp_dir = cfg.train.exp_dir
-        os.makedirs(exp_dir, exist_ok=True)
-        ckpt_dir = os.path.join(exp_dir, "checkpoints")
-        os.makedirs(ckpt_dir, exist_ok=True)
-        img_dir = os.path.join(exp_dir, "images")
-        os.makedirs(img_dir, exist_ok=True)
-        print(f"Experiment directory created at {exp_dir}")
-        logger = set_logger(__name__, exp_dir, logger_name="logger.log")
-        copy_opt_file(args.config, exp_dir)
-        print_attn_type(Logging=Logging)
-        Logging(f"Random seed: {cfg.train.seed}") 
-
-    # Create models
+    # create and load models
     swinir: SwinIR = instantiate_from_config(cfg.model.swinir)
     if cfg.train.resume_swinir:
         swinir.load_state_dict(torch.load(cfg.train.resume_swinir, map_location="cpu"), strict=True)
@@ -55,47 +43,52 @@ def main(args) -> None:
     else:
         Logging("Initialize SwinIR from scratch")
     
-    # Setup optimizer:
+    # setup optimizer
     opt = torch.optim.AdamW(
         swinir.parameters(), lr=cfg.train.learning_rate,
         weight_decay=0
     )
     
-    # Setup scheduler:
+    # setup scheduler
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=cfg.train.train_steps,
         eta_min=1e-7
     )
     
-    # Setup data
+    # setup data
     if cfg.dataset.get('use_gt'): Logging(f"Using ground-truth image!")
-    dataset = instantiate_from_config(cfg.dataset.train)
+    with suppress_stdout():
+        dataset = instantiate_from_config(cfg.dataset.train)
     train_sampler = torch.utils.data.RandomSampler(dataset)
-    group_ids = create_aspect_ratio_groups(dataset, k=cfg.train.aspect_ratio_group_factor, Logging=Logging)
+    group_ids = create_aspect_ratio_groups(
+        dataset, k=cfg.train.aspect_ratio_group_factor, Logging=Logging
+    )
     batch_sampler = GroupedBatchSampler(train_sampler, group_ids, cfg.train.batch_size)
     loader = DataLoader(
         dataset=dataset, batch_sampler=batch_sampler,
         num_workers=cfg.train.num_workers, pin_memory=True, collate_fn=collate_fn
     )
+    batch_transform = None
+    if cfg.dataset.get("batch_transform"):
+        batch_transform = instantiate_from_config(cfg.dataset.batch_transform)
     Logging(f"Training dataset contains {len(dataset):,} images from {dataset.root}")
     
     if cfg.val.batch_size == -1:
         num_gpus = accelerator.state.num_processes
         cfg.val.batch_size = num_gpus
         Logging(f"Validation batch size is automatically set to the number of available GPUs: {num_gpus}")
-    val_dataset = instantiate_from_config(cfg.dataset.val)    
+    with suppress_stdout():
+        val_dataset = instantiate_from_config(cfg.dataset.val)
     val_loader = DataLoader(
         dataset=val_dataset, batch_size=cfg.val.batch_size, shuffle=False,
         num_workers=cfg.val.num_workers, pin_memory=True, collate_fn=collate_fn
     )
     Logging(f"Validation dataset contains {len(val_dataset):,} images from {val_dataset.root}")
     
-    # Prepare models for training
+    # prepare models, training logs
     swinir.train().to(device)
     swinir, opt, sch, loader, val_loader = accelerator.prepare(swinir, opt, sch, loader, val_loader)
     pure_swinir = accelerator.unwrap_model(swinir)
-
-    # Define variables related to training
     global_step = 0
     max_steps = cfg.train.train_steps
     step_loss = []
@@ -103,19 +96,12 @@ def main(args) -> None:
     if accelerator.is_local_main_process:
         writer = SummaryWriter(exp_dir)
     
-    # Training
-    if accelerator.mixed_precision == 'fp16':
-        Logging("Mixed precision is applied")
+    # Training:
     Logging(f"Training for {max_steps} steps...")
-    
     while global_step < max_steps:
         pbar = tqdm(iterable=None, disable=not accelerator.is_local_main_process, unit="batch", total=len(loader))
-        for gt_list, lq_list, _, path_list in loader:
-            gt_list = list(rearrange(gt, 'h w c -> c h w').contiguous().float().to(device) for gt in gt_list)
-            lq_list = list(rearrange(lq, 'h w c -> c h w').contiguous().float().to(device) for lq in lq_list)
-            
-            gt_batch = list_to_batch(gt_list, img_size=512, device=device)
-            lq_batch = list_to_batch(lq_list, img_size=512, device=device)
+        for batch in loader:
+            _, _, gt_batch, lq_batch, _, _, _ = prepare_batch(batch, device, batch_transform)
             
             with accelerator.autocast():
                 res_batch = swinir(lq_batch)
@@ -131,7 +117,7 @@ def main(args) -> None:
             pbar.update(1)
             pbar.set_description(f"Epoch: {epoch:04d}, Steps: {global_step:07d}, Loss: {loss.item():.6f}")
 
-            # Log training loss, learning rate
+            # log training loss, learning rate
             if global_step % cfg.train.log_every == 0 or (args.debug):
                 avg_loss = accelerator.gather(torch.tensor(step_loss, device=device).unsqueeze(0)).mean().item()
                 step_loss.clear()
@@ -141,12 +127,12 @@ def main(args) -> None:
                     writer.add_scalar("train/loss_step", avg_loss, global_step)
                     writer.add_scalar("train/learning_rate", opt.param_groups[0]['lr'], global_step)
 
-            # Save checkpoint
+            # save checkpoint
             if global_step % cfg.train.ckpt_every == 0 or (args.debug):
                 if accelerator.is_local_main_process:
                     torch.save(pure_swinir.state_dict(), f"{ckpt_dir}/{global_step:07d}.pt")
 
-            # Save images
+            # save images
             if global_step % cfg.train.image_every == 0 or global_step == 1 or (args.debug):
                 swinir.eval()
                 N = 12
@@ -165,17 +151,16 @@ def main(args) -> None:
                         save_image(grid_image, os.path.join(img_dir, img_name))
                 swinir.train()
 
-            # Evaluation
+            # evaluation
             if global_step % cfg.val.val_every == 0 or (args.debug):
                 swinir.eval()
                 val_psnr = []
                 val_pbar = tqdm(iterable=None, disable=not accelerator.is_local_main_process, unit="batch",
                                 total=len(val_loader), leave=False, desc="Validation")
-                for val_gt_list, val_lq_list, _, _ in val_loader:
-                    val_gt_list = list(rearrange(gt, 'h w c -> c h w').contiguous().float().to(device) for gt in val_gt_list)
-                    val_lq_list = list(rearrange(lq, 'h w c -> c h w').contiguous().float().to(device) for lq in val_lq_list)
+                for val_batch in val_loader:
+                    val_gt_list, val_lq_list, _, _, _, _, val_bs = prepare_batch(val_batch, device)
+                    assert (val_bs == 1)
                     
-                    assert (len(val_gt_list) == 1)
                     val_gt = val_gt_list[0].unsqueeze(0)
                     val_lq = val_lq_list[0].unsqueeze(0)
                     
@@ -211,7 +196,7 @@ def main(args) -> None:
         pbar.close()
         epoch += 1
 
-    # Save the last model weight
+    # save the last model weight
     if accelerator.is_local_main_process:
         torch.save(pure_swinir.state_dict(), f"{ckpt_dir}/swinir_last.pt")
         Logging("done!")

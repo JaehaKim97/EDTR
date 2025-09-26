@@ -117,7 +117,7 @@ test:
   sd_path: weights/v2-1_512-ema-pruned.ckpt
   resume_decoder: ~
   resume_cldm: ~
-  resume_swinir: experiments/seg/voc2012/002_swinir-pre/checkpoints/swinir_last.pt
+  resume_swinir: ~
   resume_teacher_segnet: experiments/seg/voc2012/000_oracle/checkpoints/segnet_last.pt
   resume_segnet: ~
   strict_load: true

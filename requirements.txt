@@ -14,3 +14,4 @@ scipy==1.15.2
 tensorboard==2.19.0
 timm==1.0.15
 tqdm==4.67.1
+# lmdb==1.7.3

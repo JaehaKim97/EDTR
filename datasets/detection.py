@@ -285,7 +285,8 @@ class RealworldDetectionDataset():
         gt_size: int,
     ) -> "RealworldDetectionDataset":
         self.root = root
-        self.image_paths = glob(os.path.join(root, '*.png'))
+        exts = ["png", "jpg", "jpeg", "JPG", "JPEG"]
+        self.image_paths = sorted(sum([glob(os.path.join(root, f"*.{e}")) for e in exts], []))
         self.file_backend = instantiate_from_config(file_backend_cfg)
         self.gt_size = gt_size
         
@@ -308,10 +309,9 @@ class RealworldDetectionDataset():
         else:
             scale_factor = self.gt_size / width
             image = cv2.resize(image, dsize=(self.gt_size, int(height * scale_factor)), interpolation=cv2.INTER_CUBIC)
-        height, width = image.shape[:2]
         
         # hwc, rgb, 0,255, uint8
-        return image
+        return image, height, width
     
     def __getitem__(self, index: int, max_retry: int=5) -> Dict[str, torch.Tensor]:
         # load img
@@ -319,7 +319,7 @@ class RealworldDetectionDataset():
         while (img is None):
             # load meta file
             img_path = self.image_paths[index]
-            img = self.load_image(img_path)
+            img, height, width = self.load_image(img_path)
             if (img is None):
                 print(f"failed to load {img_path}, try another image")
                 index = random.randint(0, len(self) - 1)
@@ -327,7 +327,7 @@ class RealworldDetectionDataset():
         # Shape: (h, w, c); channel order: RGB; image range: [0, 1], float32.
         img = torch.Tensor((img / 255.0).astype(np.float32))
 
-        return img, img_path
+        return img, height, width, img_path
 
     def __len__(self) -> int:
         return len(self.image_paths)

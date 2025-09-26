@@ -1,59 +1,43 @@
-import os
-import sys
-import torch
+import os, sys
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(parent_dir)
+import utils.filter_warning
 
+import torch
 from tqdm import tqdm
 from utils.common import (
     instantiate_from_config, load_network,
-    copy_opt_file, set_logger, calculate_psnr_pt
+    calculate_psnr_pt, wavelet_reconstruction
 )
-from utils.segmentation import convert2color, calculate_mat, compute_iou
+from utils.segmentation import (
+    convert2color, calculate_mat, compute_iou, prepare_environment
+)
 from torch.utils.data import DataLoader
 from einops import rearrange
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
-from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate import Accelerator, DataLoaderConfiguration
 from torchvision.utils import save_image
 
 
 def main(args) -> None:
-    # Setup accelerator
+    # setup environment
     cfg = OmegaConf.load(args.config)
-    accelerator = Accelerator(split_batches=True, mixed_precision=cfg.test.precision)
-    set_seed(args.seed)
+    accelerator = Accelerator(dataloader_config=DataLoaderConfiguration(split_batches=True),
+                              mixed_precision=cfg.test.precision)
     device = accelerator.device
-    
-    def Logging(text, print=True):
-        if accelerator.is_local_main_process:
-            if print:
-                logger.info(text)
-            else:
-                logger.debug(text)
+    dirs, Logging = prepare_environment(__name__, cfg, args, accelerator, is_oracle=True)
+    exp_dir = dirs["exp"]
+    if args.save_img:
+        pred_mask_dir, gt_mask_dir = dirs["pred_mask"], dirs["gt_mask"]
 
-    # Set up the experiment folder and logger
-    exp_dir = cfg.test.exp_dir
-    if accelerator.is_local_main_process:
-        os.makedirs(exp_dir, exist_ok=True)
-        logger = set_logger(__name__, exp_dir, logger_name=f"logger_test_s{args.seed}.log")
-        copy_opt_file(args.config, exp_dir)
-        print(f"Experiment directory created at {exp_dir}")
-        if args.save_img and accelerator.is_local_main_process:
-            pred_mask_dir = os.path.join(exp_dir, f'results_s{args.seed}', 'pred_mask')
-            os.makedirs(pred_mask_dir, exist_ok=True)
-            gt_mask_dir = os.path.join(exp_dir, f'results_s{args.seed}', 'gt_mask')
-            os.makedirs(gt_mask_dir, exist_ok=True)
-        Logging(f"Random seed: {args.seed}")
-
-    # Create models
+    # create and load models
     segnet = instantiate_from_config(cfg.model.segnet)
     load_path = cfg.test.resume_segnet if cfg.test.get('resume_segnet') else os.path.join(exp_dir, 'checkpoints', 'segnet_last.pt')
     segnet = load_network(segnet, load_path, strict=True)
     Logging(f"Load SegmentationNetwork weight from checkpoint: {load_path}")
     
-    # Setup data
+    # setup data
     val_dataset = instantiate_from_config(cfg.dataset.val)
     val_loader = DataLoader(
         dataset=val_dataset, batch_size=cfg.test.batch_size,
@@ -62,15 +46,13 @@ def main(args) -> None:
     )
     Logging(f"Validation dataset contains {len(val_dataset):,} images from {val_dataset.root}")
 
-    # Prepare models for testing
+    # prepare models, testing logs
     segnet.eval().to(device)
     segnet, val_loader = accelerator.prepare(segnet, val_loader)
-
-    # Evaluation
-    if accelerator.mixed_precision == 'fp16':
-        Logging("Mixed precision is applied")
     val_psnr, n_classes = [], 21
     confmat = torch.zeros((n_classes, n_classes), device=device)
+
+    # Testing:
     Logging(f"Testing start...")
     val_pbar = tqdm(iterable=None, disable=not accelerator.is_local_main_process, unit="batch",
                     total=len(val_loader), leave=False, desc="Validation")
@@ -79,14 +61,14 @@ def main(args) -> None:
         val_lq = rearrange(val_lq, "b h w c -> b c h w").contiguous().float().to(device)
         val_mask = val_mask.long()
         
-        # Input image type
+        # input image type
         val_inp = val_gt if cfg.dataset.get('use_gt') else val_lq
         
         with torch.no_grad():
             val_pred = segnet(val_inp, normalize=True)
             val_mat = calculate_mat(val_mask.flatten(), val_pred['out'].argmax(1).flatten(), n=n_classes).unsqueeze(0)
             
-            # Save images
+            # save images
             if args.save_img and accelerator.is_local_main_process:
                 for idx, basename in enumerate(val_path):
                     basename = os.path.basename(basename)
@@ -98,7 +80,7 @@ def main(args) -> None:
                     gt_mask_name = os.path.splitext(os.path.join(gt_mask_dir, basename))[0] + ".png"
                     save_image(gt_mask, gt_mask_name)
                     
-            # Calculate metrics
+            # calculate metrics
             val_psnr_batch = calculate_psnr_pt(val_inp, val_gt, crop_border=0).unsqueeze(0)
             val_mat = accelerator.gather_for_metrics(val_mat)
             val_psnr_batch, val_mat = accelerator.gather_for_metrics((val_psnr_batch, val_mat))

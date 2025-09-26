@@ -1,84 +1,59 @@
-import os
-import sys
-import math
-import torch
-import safetensors
+import os, sys
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(parent_dir)
+import utils.filter_warning
 
+import math
+import torch
 from tqdm import tqdm
 from model import SwinIR, ControlLDM, Diffusion
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from utils.common import (
-    instantiate_from_config, wavelet_reconstruction, load_network,
-    set_logger, calculate_psnr_pt, copy_opt_file
+    instantiate_from_config, load_network,
+    calculate_psnr_pt, wavelet_reconstruction
 )
 from utils.detection import (
-    CocoEvaluator, draw_box, collate_fn, get_coco_api_from_dataset,
-    _get_iou_types, list_to_batch, batch_to_list
+    GroupedBatchSampler, CocoEvaluator, prepare_environment, prepare_batch,
+    create_aspect_ratio_groups, get_coco_api_from_dataset, batch_to_list, 
+    collate_fn, _get_iou_types, draw_box, suppress_stdout
 )
 from utils.sampler import SpacedSampler
-from einops import rearrange
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
-from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate import Accelerator, DataLoaderConfiguration
 from torchvision.utils import save_image
 
 
 def main(args) -> None:
-    # Setup accelerator
+    # setup environment
     cfg = OmegaConf.load(args.config)
-    accelerator = Accelerator(split_batches=True, mixed_precision=cfg.test.precision)
-    set_seed(args.seed)
+    accelerator = Accelerator(dataloader_config=DataLoaderConfiguration(split_batches=True),
+                              mixed_precision=cfg.test.precision)
     device = accelerator.device
-    
-    def Logging(text, print=True):
-        if accelerator.is_local_main_process:
-            if print:
-                logger.info(text)
-            else:
-                logger.debug(text)
+    dirs, Logging = prepare_environment(__name__, cfg, args, accelerator)
+    exp_dir = dirs["exp"]
+    if args.save_img:
+        img_dir, box_dir = dirs["img"], dirs["box"]
+    is_coco = True if cfg.dataset.get('is_coco') else False
 
-    # Setup an experiment folder
-    exp_dir = cfg.test.exp_dir
-    if accelerator.is_local_main_process:
-        os.makedirs(exp_dir, exist_ok=True)
-        logger = set_logger(__name__, exp_dir, logger_name=f"logger_test_s{args.seed}.log")
-        copy_opt_file(args.config, exp_dir)
-        Logging(f"Experiment directory created at {exp_dir}")
-        if args.save_img and accelerator.is_local_main_process:
-            img_dir = os.path.join(exp_dir, f'results_s{args.seed}', 'img')
-            os.makedirs(img_dir, exist_ok=True)
-            box_dir = os.path.join(exp_dir, f'results_s{args.seed}', 'box')
-            os.makedirs(box_dir, exist_ok=True)
-        Logging(f"Random seed: {args.seed}")
-
-    # Create models
+    # create and load models
     if cfg.model.pre_restoration:
-        Logging("Using pre-restoration: SwinIR")
         swinir: SwinIR = instantiate_from_config(cfg.model.swinir)
+        if cfg.test.resume_swinir is None:
+            cfg.test.resume_swinir = os.path.join(exp_dir, 'checkpoints', 'swinir_last.pt')
         swinir.load_state_dict(torch.load(cfg.test.resume_swinir, map_location="cpu"), strict=True)
         Logging(f"Load SwinIR weight from checkpoint: {cfg.test.resume_swinir}")
     else:
         Logging("Not using pre-restoration")
     
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
-    if 'turbo' in cfg.test.sd_path:
-        sd = safetensors.torch.load_file(cfg.test.sd_path, device="cpu")
-        unused = cldm.load_pretrained_sd(sd, is_turbo=True)
-        Logging(f"Stable Diffusion **TURBO** is using")    
-    else:
-        sd = torch.load(cfg.test.sd_path, map_location="cpu")["state_dict"]
-        unused = cldm.load_pretrained_sd(sd)
-    Logging(f"Load pretrained SD weight from {cfg.test.sd_path}")
-        
+    sd = torch.load(cfg.test.sd_path, map_location="cpu")["state_dict"]
+    cldm.load_pretrained_sd(sd)
     if cfg.test.resume_cldm is None:
         cfg.test.resume_cldm = os.path.join(exp_dir, 'checkpoints', 'cldm_last.pt')
     cldm.load_controlnet_from_ckpt(torch.load(cfg.test.resume_cldm, map_location="cpu"))
     Logging(f"Load ControlNet weight from checkpoint: {cfg.test.resume_cldm}")
-    
     if cfg.test.resume_decoder is None:
         cfg.test.resume_decoder = os.path.join(exp_dir, 'checkpoints', 'decoder_last.pt')
     cldm.vae.decoder.load_state_dict(torch.load(cfg.test.resume_decoder, map_location="cpu"))
@@ -96,22 +71,22 @@ def main(args) -> None:
     detnet = load_network(detnet, cfg.test.resume_detnet, strict=True)
     Logging(f"Load DetectionNetwork weight from checkpoint: {cfg.test.resume_detnet}")
     
-    # Setup data
-    val_dataset = instantiate_from_config(cfg.dataset.val)
-    val_loader = DataLoader(
-        dataset=val_dataset, batch_size=cfg.test.batch_size,
-        num_workers=cfg.test.num_workers, shuffle=False, pin_memory=True, collate_fn=collate_fn
-    )
-    Logging(f"Validation dataset contains {len(val_dataset):,} images from {val_dataset.root}")
-    
-    # Diffusion functions
     diffusion: Diffusion = instantiate_from_config(cfg.model.diffusion)
     sampler = SpacedSampler(diffusion.betas)
     val_ts, val_N = cfg.test.start_timestep, cfg.test.num_timesteps
     val_used_timesteps = [math.floor(val_ts/val_N*i) for i in range(1, val_N+1)]
     Logging(f"Used val timesteps are specified as {val_used_timesteps}, total number of {val_N}")
+    
+    # setup data
+    with suppress_stdout():
+        val_dataset = instantiate_from_config(cfg.dataset.val)
+    val_loader = DataLoader(
+        dataset=val_dataset, batch_size=cfg.test.batch_size,
+        num_workers=cfg.test.num_workers, shuffle=False, pin_memory=True, collate_fn=collate_fn
+    )
+    Logging(f"Validation dataset contains {len(val_dataset):,} images from {val_dataset.root}")
 
-    # Prepare models for testing
+    # prepare models, evaluator, testing logs
     swinir.eval().to(device)
     cldm.eval().to(device)
     teacher_detnet.eval().to(device)
@@ -121,73 +96,68 @@ def main(args) -> None:
         accelerator.prepare(swinir, cldm, teacher_detnet, detnet, val_loader)
     pure_cldm: ControlLDM = accelerator.unwrap_model(cldm)
     pure_detnet = accelerator.unwrap_model(detnet)
-    
-    # Evaluation
-    if accelerator.mixed_precision == 'fp16':
-        Logging("Mixed precision is applied")
-    val_psnr, val_fd = [], []
     Logging("Preparing COCO API for evaluation ..")
-    coco = get_coco_api_from_dataset(val_dataset)
+    with suppress_stdout():
+        coco = get_coco_api_from_dataset(val_dataset)
     iou_types = _get_iou_types(pure_detnet)
     coco_evaluator = CocoEvaluator(coco, iou_types)
+    val_psnr, val_fd = [], []
+    
+    # Testing:
     Logging(f"Testing start...")
     val_pbar = tqdm(iterable=None, disable=not accelerator.is_local_main_process, unit="batch",
                     total=len(val_loader), leave=False, desc="Validation")
-    for val_gt_list, val_lq_list, val_annot_list, val_path_list in val_loader:
-        val_gt_list = list(rearrange(val_gt, 'h w c -> c h w').contiguous().float().to(device) for val_gt in val_gt_list)
-        val_lq_list = list(rearrange(val_lq, 'h w c -> c h w').contiguous().float().to(device) for val_lq in val_lq_list)
-        val_annot_list = [{k: v.long().to(device) if isinstance(v, torch.Tensor) else v for k, v in val_t.items()} for val_t in val_annot_list]
-        val_bs = len(val_gt_list)
+    for val_batch in val_loader:
+        val_gt_list, _, _, val_lq_batch, val_annot_list, val_path_list, val_bs = prepare_batch(val_batch, device)
         val_prompt = [cfg.test.default_prompt] * val_bs
-        assert (len(val_gt_list) == 1)
+        assert (val_bs == 1)
         
         with torch.no_grad():    
-            # Pre-restoration
-            val_lq_batch = list_to_batch(val_lq_list, img_size=512, device=device)
+            # pre-restoration
             val_pre_res_batch = val_lq_batch
             if cfg.model.pre_restoration: val_pre_res_batch = swinir(val_lq_batch)
             
-            # Prepare condition
+            # prepare condition
             val_z_pre_res = pure_cldm.vae_encode(val_pre_res_batch * 2 - 1, sample=False)
             val_cond = dict(c_txt=pure_cldm.clip.encode(val_prompt), c_img=val_z_pre_res)
             
-            # Partial diffusion
+            # partial diffusion
             val_noise = torch.randn_like(val_z_pre_res)
             val_t = torch.tensor([val_ts] * val_bs, dtype=torch.int64).to(device)
             val_z_partial = diffusion.q_sample(x_start=val_z_pre_res, t=val_t, noise=val_noise)
             
-            # Short-step denoising
+            # short-step denoising
             val_z = sampler.manual_sample_with_timesteps(
-                model=cldm, device=device, x_T=val_z_partial, steps=len(val_used_timesteps), used_timesteps=val_used_timesteps,
-                batch_size=val_bs, x_size=val_z_pre_res.shape[1:], cond=val_cond, uncond=None, cfg_scale=1.0, 
-                progress=accelerator.is_local_main_process, progress_leave=False
+                model=cldm, device=device, x_T=val_z_partial, steps=len(val_used_timesteps),
+                used_timesteps=val_used_timesteps, batch_size=val_bs, cond=val_cond, uncond=None,
+                cfg_scale=1.0, progress=accelerator.is_local_main_process, progress_leave=False
             )
             val_res_batch = wavelet_reconstruction((pure_cldm.vae_decode(val_z) + 1) / 2, val_pre_res_batch)
             val_res_list = batch_to_list(val_res_batch, val_gt_list)
             
-            # Detection
+            # detection
             val_pred_list, _ = detnet(val_res_list)
             val_pred_list = [{k: v.to(torch.device("cpu")) for k, v in t.items()} for t in val_pred_list]
             res = {annot["image_id"]: pred for annot, pred in zip(val_annot_list, val_pred_list)}
             
-            # Calculate feature-distance
+            # calculate feature-distance
             if args.calc_fd:
                 _, _, feat_gt = teacher_detnet(val_gt_list, return_feat=True)
                 _, _, feat_res = teacher_detnet(val_res_list, return_feat=True)
             
-            # Save images
+            # save images
             if args.save_img and accelerator.is_local_main_process:
                 for idx, basename in enumerate(val_path_list):
                     basename = os.path.basename(basename)
                     img_name = os.path.splitext(os.path.join(img_dir, basename))[0] + ".png"
                     save_image(val_res_list[idx], img_name)
                     
-                    val_pred_box = draw_box(val_res_list[0], val_pred_list[0],
+                    val_pred_box = draw_box(val_res_list[0], val_pred_list[0], is_coco=is_coco,
                                             score_threshold=0.8, fontsize=0.7, split_acc=True)
                     box_name = os.path.splitext(os.path.join(box_dir, basename))[0] + ".png"
                     save_image(val_pred_box, box_name)
             
-            # Calculate metrics
+            # calculate metrics
             val_gt, val_res = val_gt_list[0].unsqueeze(0), val_res_list[0].unsqueeze(0)
             val_psnr_batch = calculate_psnr_pt(val_res, val_gt, crop_border=0).unsqueeze(0)
             val_psnr_batch = accelerator.gather_for_metrics(val_psnr_batch)
@@ -203,7 +173,8 @@ def main(args) -> None:
     val_pbar.close()
     
     coco_evaluator.synchronize_between_processes()
-    coco_evaluator.accumulate()
+    with suppress_stdout():
+        coco_evaluator.accumulate()
     
     if accelerator.is_local_main_process:
         avg_val_psnr = torch.tensor(val_psnr).mean().item()

@@ -22,4 +22,4 @@ if __name__ == '__main__':
         if os.path.exists('datasets/source/archive.zip'):
             os.remove('datasets/source/archive.zip')
         
-        print('Done!')
+        print('Done! archive.zip file is removed.')

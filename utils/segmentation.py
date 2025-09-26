@@ -1,5 +1,51 @@
+import os
 import numpy as np
 import torch
+from utils.common import copy_opt_file, print_attn_type, Logger
+from accelerate.utils import set_seed
+
+
+def prepare_environment(name, cfg, args, accelerator, is_oracle=False):
+    dirs = dict()
+    if cfg.get("train"):
+        exp_dir = cfg.train.exp_dir
+        seed = cfg.train.seed
+        dirs["exp"] = exp_dir
+        dirs["ckpt"] = os.path.join(exp_dir, "checkpoints")
+        dirs["img"] = os.path.join(exp_dir, "images")
+        os.makedirs(exp_dir, exist_ok=True)
+        Logging = Logger(name, exp_dir, accelerator, logger_name="logger.log")
+    elif cfg.get("test"):
+        exp_dir = cfg.test.exp_dir
+        seed = args.seed
+        dirs["exp"] = cfg.test.exp_dir        
+        if args.save_img:
+            if is_oracle:
+                dirs["pred_mask"] = os.path.join(exp_dir, f'results_s{seed}', 'pred_mask')
+                dirs["gt_mask"] = os.path.join(exp_dir, f'results_s{seed}', 'gt_mask')
+            else:
+                dirs["img"] = os.path.join(exp_dir, f'results_s{seed}', 'img')
+                dirs["mask"] = os.path.join(exp_dir, f'results_s{seed}', 'mask')
+        os.makedirs(exp_dir, exist_ok=True)
+        Logging = Logger(name, exp_dir, accelerator, logger_name="logger_test.log")
+    else:
+        raise NotImplementedError("Error: mode is not clear; training or test?")
+    
+    if accelerator.is_local_main_process:
+        for k in dirs.keys():
+            os.makedirs(dirs[k], exist_ok=True)
+    Logging(f"Experiment directory created at {exp_dir}")
+    
+    set_seed(seed)
+    Logging(f"Random seed: {seed}")
+    
+    copy_opt_file(args.config, exp_dir)
+    print_attn_type(Logging=Logging)
+    
+    if accelerator.mixed_precision == 'fp16':
+        Logging("Mixed precision is applied")
+        
+    return dirs, Logging
 
 
 @torch.inference_mode()

@@ -3,11 +3,12 @@
 # Reference: https://github.com/pytorch/vision/blob/main/torchvision/models/resnet.py
 # -----------------------------------------------------------------------------------
 
-from typing import Callable, List, Optional, Type, Union
+from typing import Any, Callable, List, Optional, Type, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from torch import Tensor
 from torchvision.transforms import transforms
 
@@ -328,3 +329,47 @@ class ResNet(nn.Module):
             raise NotImplementedError(
                 f'mode shoule be in [train, eval], but got {mode}'
             )
+
+
+def _resnet(
+    type: int,
+    weights,
+    progress: bool,
+    **kwargs: Any,
+) -> ResNet:
+    model = ResNet(type, **kwargs)
+    
+    if weights is not None:
+        # print(f'Load backbone weight from {weights} ..')
+        load_weights = torchvision.models.get_weight(weights)
+        model.load_state_dict(load_weights.get_state_dict(progress=progress))
+
+    return model
+
+
+def resnet50(*, weights = None, progress: bool = True, **kwargs: Any) -> ResNet:
+    """ResNet-50 from `Deep Residual Learning for Image Recognition <https://arxiv.org/abs/1512.03385>`__.
+
+    .. note::
+       The bottleneck of TorchVision places the stride for downsampling to the second 3x3
+       convolution while the original paper places it to the first 1x1 convolution.
+       This variant improves the accuracy and is known as `ResNet V1.5
+       <https://ngc.nvidia.com/catalog/model-scripts/nvidia:resnet_50_v1_5_for_pytorch>`_.
+
+    Args:
+        weights (:class:`~torchvision.models.ResNet50_Weights`, optional): The
+            pretrained weights to use. See
+            :class:`~torchvision.models.ResNet50_Weights` below for
+            more details, and possible values. By default, no pre-trained
+            weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``torchvision.models.resnet.ResNet``
+            base class. Please refer to the `source code
+            <https://github.com/pytorch/vision/blob/main/torchvision/models/resnet.py>`_
+            for more details about this class.
+
+    .. autoclass:: torchvision.models.ResNet50_Weights
+        :members:
+    """
+    return _resnet(50, weights, progress, **kwargs)

@@ -1,5 +1,6 @@
 import os
-import cv2
+import sys
+import time
 import numpy as np
 import torch
 import logging
@@ -7,13 +8,16 @@ import importlib
 
 from PIL import Image, ImageDraw, ImageFont
 from copy import deepcopy
+from tqdm import tqdm
 from torch import Tensor
 from torch.nn import functional as F
-from torch.hub import download_url_to_file, get_dir
-from typing import Mapping, Any, Tuple, Callable
-from urllib.parse import urlparse
+from shutil import copyfile
+from typing import Mapping, Any, Tuple, Callable, Literal
 from torchvision.models import get_model
 from torchvision.transforms.functional import normalize
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="timm.models.layers")
 
 
 def get_obj_from_str(string: str, reload: bool=False) -> Any:
@@ -28,6 +32,68 @@ def instantiate_from_config(config: Mapping[str, Any]) -> Any:
     if not "target" in config:
         raise KeyError("Expected key `target` to instantiate.")
     return get_obj_from_str(config["target"])(**config.get("params", dict()))
+
+
+def copy_opt_file(opt_file, experiments_root):
+    # copy the yml file to the experiment root
+    cmd = 'accelerate launch ' + ' '.join(sys.argv)
+    filename = os.path.join(experiments_root, opt_file)
+    os.makedirs(os.path.join(experiments_root, os.path.dirname(opt_file)), exist_ok=True)
+    copyfile(opt_file, filename)
+
+    with open(filename, 'r+') as f:
+        lines = f.readlines()
+        lines.insert(0, f'# GENERATE TIME: {time.asctime()}\n# CMD:\n# {cmd}\n\n')
+        f.seek(0)
+        f.writelines(lines)
+
+
+def set_logger(file_name, exp_dir, logger_name):
+    logger = logging.getLogger(file_name)
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('[%(asctime)s] %(message)s')
+    streamHandler = logging.StreamHandler()
+    fileHandler = logging.FileHandler(f'{exp_dir}/{logger_name}')
+    streamHandler.setFormatter(formatter)
+    fileHandler.setFormatter(formatter)
+    streamHandler.setLevel(level=logging.INFO)  # Save and print
+    fileHandler.setLevel(level=logging.DEBUG)  # Only save
+    logger.addHandler(streamHandler)
+    logger.addHandler(fileHandler)
+    return logger
+
+
+class Logger:
+    def __init__(self, name, path, accelerator, logger_name="logger.log"):
+        self.logger = set_logger(name, path, logger_name)
+        self.accelerator = accelerator
+        
+    def __call__(self, text, print=True):
+        if self.accelerator.is_local_main_process:
+            if print:
+                self.logger.info(text)
+            else:
+                self.logger.debug(text)
+
+
+def print_attn_type(Logging):
+    # Attention type:
+    from model.config import SDP_IS_AVAILABLE, XFORMERS_IS_AVAILBLE
+    if SDP_IS_AVAILABLE:
+        Logging("Using sdp attention as default")
+    elif XFORMERS_IS_AVAILBLE:
+        Logging("Using xformers attention as default")   
+    return
+
+
+def prepare_dirs():
+    # Attention type:
+    from model.config import SDP_IS_AVAILABLE, XFORMERS_IS_AVAILBLE
+    if SDP_IS_AVAILABLE:
+        Logging("Using sdp attention as default")
+    elif XFORMERS_IS_AVAILBLE:
+        Logging("Using xformers attention as default")   
+    return
 
 
 def wavelet_blur(image: Tensor, radius: int):
@@ -81,55 +147,6 @@ def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor):
     return content_high_freq + style_low_freq
 
 
-# https://github.com/XPixelGroup/BasicSR/blob/master/basicsr/utils/download_util.py/
-def load_file_from_url(url, model_dir=None, progress=True, file_name=None):
-    """Load file form http url, will download models if necessary.
-
-    Ref:https://github.com/1adrianb/face-alignment/blob/master/face_alignment/utils.py
-
-    Args:
-        url (str): URL to be downloaded.
-        model_dir (str): The path to save the downloaded model. Should be a full path. If None, use pytorch hub_dir.
-            Default: None.
-        progress (bool): Whether to show the download progress. Default: True.
-        file_name (str): The downloaded file name. If None, use the file name in the url. Default: None.
-
-    Returns:
-        str: The path to the downloaded file.
-    """
-    if model_dir is None:  # use the pytorch hub_dir
-        hub_dir = get_dir()
-        model_dir = os.path.join(hub_dir, 'checkpoints')
-
-    os.makedirs(model_dir, exist_ok=True)
-
-    parts = urlparse(url)
-    filename = os.path.basename(parts.path)
-    if file_name is not None:
-        filename = file_name
-    cached_file = os.path.abspath(os.path.join(model_dir, filename))
-    if not os.path.exists(cached_file):
-        print(f'Downloading: "{url}" to {cached_file}\n')
-        download_url_to_file(url, cached_file, hash_prefix=None, progress=progress)
-    return cached_file
-
-
-def sliding_windows(h: int, w: int, tile_size: int, tile_stride: int) -> Tuple[int, int, int, int]:
-    hi_list = list(range(0, h - tile_size + 1, tile_stride))
-    if (h - tile_size) % tile_stride != 0:
-        hi_list.append(h - tile_size)
-    
-    wi_list = list(range(0, w - tile_size + 1, tile_stride))
-    if (w - tile_size) % tile_stride != 0:
-        wi_list.append(w - tile_size)
-    
-    coords = []
-    for hi in hi_list:
-        for wi in wi_list:
-            coords.append((hi, hi + tile_size, wi, wi + tile_size))
-    return coords
-
-
 # https://github.com/csslc/CCSR/blob/main/model/q_sampler.py#L503
 def gaussian_weights(tile_width: int, tile_height: int) -> np.ndarray:
     """Generates a gaussian mask of weights for tile contributions"""
@@ -146,22 +163,6 @@ def gaussian_weights(tile_width: int, tile_height: int) -> np.ndarray:
         for y in range(latent_height)]
     weights = np.outer(y_probs, x_probs)
     return weights
-
-
-COUNT_VRAM = bool(os.environ.get("COUNT_VRAM", False))
-
-def count_vram_usage(func: Callable) -> Callable:
-    if not COUNT_VRAM:
-        return func
-    
-    def wrapper(*args, **kwargs):
-        peak_before = torch.cuda.max_memory_allocated() / (1024 ** 3)
-        ret = func(*args, **kwargs)
-        torch.cuda.synchronize()
-        peak_after = torch.cuda.max_memory_allocated() / (1024 ** 3)
-        print(f"VRAM peak before {func.__name__}: {peak_before:.5f} GB, after: {peak_after:.5f} GB")
-        return ret
-    return wrapper
 
 
 def log_txt_as_img(wh, xc):
@@ -333,44 +334,94 @@ def load_network(crt_net, load_path, strict):
     return crt_net
 
 
-def copy_opt_file(opt_file, experiments_root):
-    # copy the yml file to the experiment root
-    import sys
-    import time
-    from shutil import copyfile
+def pad_if_smaller(imgs: torch.Tensor, size: int) -> torch.Tensor:
+    _, _, h, w = imgs.size()
+    ph, pw = max(size - h, 0), max(size - w, 0)
+    return F.pad(imgs, pad=(0, pw, 0, ph), mode="constant", value=0)
+
+
+def pad_to_multiples_of(imgs: torch.Tensor, multiple: int) -> torch.Tensor:
+    _, _, h, w = imgs.size()
+    if h % multiple == 0 and w % multiple == 0:
+        return imgs.clone()
+    ph, pw = map(lambda x: (x + multiple - 1) // multiple * multiple - x, (h, w))
+    return F.pad(imgs, pad=(0, pw, 0, ph), mode="constant", value=0)
+
+
+def sliding_windows(h: int, w: int, tile_size: int, tile_stride: int) -> Tuple[int, int, int, int]:
+    hi_list = list(range(0, h - tile_size + 1, tile_stride))
+    if (h - tile_size) % tile_stride != 0:
+        hi_list.append(h - tile_size)
     
-    cmd = 'accelerate launch ' + ' '.join(sys.argv)
-    filename = os.path.join(experiments_root, opt_file)
-    os.makedirs(os.path.join(experiments_root, os.path.dirname(opt_file)), exist_ok=True)
-    copyfile(opt_file, filename)
-
-    with open(filename, 'r+') as f:
-        lines = f.readlines()
-        lines.insert(0, f'# GENERATE TIME: {time.asctime()}\n# CMD:\n# {cmd}\n\n')
-        f.seek(0)
-        f.writelines(lines)
-
-
-def set_logger(file_name, exp_dir, logger_name):
-    logger = logging.getLogger(file_name)
-    logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('[%(asctime)s] %(message)s')
-    streamHandler = logging.StreamHandler()
-    fileHandler = logging.FileHandler(f'{exp_dir}/{logger_name}')
-    streamHandler.setFormatter(formatter)
-    fileHandler.setFormatter(formatter)
-    streamHandler.setLevel(level=logging.INFO)  # Save and print
-    fileHandler.setLevel(level=logging.DEBUG)  # Only save
-    logger.addHandler(streamHandler)
-    logger.addHandler(fileHandler)
-    return logger
+    wi_list = list(range(0, w - tile_size + 1, tile_stride))
+    if (w - tile_size) % tile_stride != 0:
+        wi_list.append(w - tile_size)
+    
+    coords = []
+    for hi in hi_list:
+        for wi in wi_list:
+            coords.append((hi, hi + tile_size, wi, wi + tile_size))
+    return coords
 
 
-def print_attn_type(Logging):
-    # Attention type:
-    from model.config import SDP_IS_AVAILABLE, XFORMERS_IS_AVAILBLE
-    if SDP_IS_AVAILABLE:
-        Logging("Using sdp attention as default")
-    elif XFORMERS_IS_AVAILBLE:
-        Logging("Using xformers attention as default")   
-    return
+def make_tiled_fn(
+    fn: Callable[[torch.Tensor], torch.Tensor],
+    size: int,
+    stride: int,
+    scale_type: Literal["up", "down"] = "up",
+    scale: int = 1,
+    channel: int | None = None,
+    weight: Literal["uniform", "gaussian"] = "gaussian",
+    dtype: torch.dtype | None = None,
+    device: torch.device | None = None,
+    # callback: Callable[[int, int, int, int], None] | None = None,
+    progress: bool = True,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    # Only split the first input of function.
+    def tiled_fn(x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        if scale_type == "up":
+            scale_fn = lambda n: int(n * scale)
+        else:
+            scale_fn = lambda n: int(n // scale)
+
+        b, c, h, w = x.size()
+        out_dtype = dtype or x.dtype
+        out_device = device or x.device
+        out_channel = channel or c
+        out = torch.zeros(
+            (b, out_channel, scale_fn(h), scale_fn(w)),
+            dtype=out_dtype,
+            device=out_device,
+        )
+        count = torch.zeros_like(out, dtype=torch.float32)
+        weight_size = scale_fn(size)
+        weights = (
+            gaussian_weights(weight_size, weight_size)[None, None]
+            if weight == "gaussian"
+            else np.ones((1, 1, weight_size, weight_size))
+        )
+        weights = torch.tensor(
+            weights,
+            dtype=out_dtype,
+            device=out_device,
+        )
+
+        indices = sliding_windows(h, w, size, stride)
+        pbar = tqdm(
+            indices, desc=f"Tiled Processing", disable=not progress, leave=False
+        )
+        for hi, hi_end, wi, wi_end in pbar:
+            x_tile = x[..., hi:hi_end, wi:wi_end]
+            out_hi, out_hi_end, out_wi, out_wi_end = map(
+                scale_fn, (hi, hi_end, wi, wi_end)
+            )
+            if len(args) or len(kwargs):
+                kwargs.update(dict(hi=hi, hi_end=hi_end, wi=wi, wi_end=wi_end))
+            out[..., out_hi:out_hi_end, out_wi:out_wi_end] += (
+                fn(x_tile, *args, **kwargs) * weights
+            )
+            count[..., out_hi:out_hi_end, out_wi:out_wi_end] += weights
+        out = out / count
+        return out
+
+    return tiled_fn

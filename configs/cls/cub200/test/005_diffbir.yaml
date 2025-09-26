@@ -112,7 +112,7 @@ test:
   sd_path: weights/v2-1_512-ema-pruned.ckpt
   resume_decoder: ~
   resume_cldm: ~
-  resume_swinir: experiments/cls/cub200/002_swinir-pre/checkpoints/swinir_last.pt
+  resume_swinir: ~
   resume_teacher_clsnet: experiments/cls/cub200/000_oracle/checkpoints/clsnet_last.pt
   resume_clsnet: ~
   strict_load: true

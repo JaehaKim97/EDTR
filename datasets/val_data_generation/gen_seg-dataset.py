@@ -24,7 +24,7 @@ def main(args) -> None:
     print(f"Experiment directory created at {exp_dir}")
     logger = set_logger(__name__, exp_dir, logger_name="logger.log")
     
-    # Setup data
+    # setup data
     dataset = instantiate_from_config(cfg.dataset.val)
     loader = DataLoader(
         dataset=dataset, batch_size=cfg.val.batch_size,

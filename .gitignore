@@ -2,8 +2,16 @@
 experiments
 weights
 datasets/source
+inputs
+!inputs/demo
+results
+!results/demo
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *.swp
+
+# Temporary files
+script*.sh
+deprecated

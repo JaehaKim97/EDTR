@@ -1,5 +1,7 @@
 import io
+import os
 import cv2
+import sys
 import copy
 import math
 import numpy as np
@@ -10,25 +12,92 @@ import pycocotools.mask as mask_util
 import torchvision
 
 from PIL import Image
+from utils.common import copy_opt_file, print_attn_type, Logger
 from torch.utils.data.sampler import BatchSampler, Sampler
 from torch.utils.model_zoo import tqdm
+from einops import rearrange
 from itertools import chain, repeat
-from contextlib import redirect_stdout
+from accelerate.utils import set_seed
+from contextlib import redirect_stdout, contextmanager
 from collections import defaultdict
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 
-def convert2label(label):
-    table = ['aeroplane', 'bicycle', 'bird', 'boat' ,'bottle', 'bus', 'car',
-             'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike',
-             'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
+def prepare_environment(name, cfg, args, accelerator, is_oracle=False):
+    dirs = dict()
+    if cfg.get("train"):
+        exp_dir = cfg.train.exp_dir
+        seed = cfg.train.seed
+        dirs["exp"] = exp_dir
+        dirs["ckpt"] = os.path.join(exp_dir, "checkpoints")
+        dirs["img"] = os.path.join(exp_dir, "images")
+        os.makedirs(exp_dir, exist_ok=True)
+        Logging = Logger(name, exp_dir, accelerator, logger_name="logger.log")
+    elif cfg.get("test"):
+        exp_dir = cfg.test.exp_dir
+        seed = args.seed
+        dirs["exp"] = cfg.test.exp_dir        
+        if args.save_img:
+            if is_oracle:
+                dirs["pred_box"] = os.path.join(exp_dir, f'results_s{seed}', 'pred_box')
+                dirs["gt_box"] = os.path.join(exp_dir, f'results_s{seed}', 'gt_box')
+            else:
+                dirs["img"] = os.path.join(exp_dir, f'results_s{seed}', 'img')
+                dirs["box"] = os.path.join(exp_dir, f'results_s{seed}', 'box')
+        os.makedirs(exp_dir, exist_ok=True)
+        Logging = Logger(name, exp_dir, accelerator, logger_name="logger_test.log")
+    else:
+        raise NotImplementedError("Error: mode is not clear; training or test?")
+    
+    if accelerator.is_local_main_process:
+        for k in dirs.keys():
+            os.makedirs(dirs[k], exist_ok=True)
+    Logging(f"Experiment directory created at {exp_dir}")
+    
+    set_seed(seed)
+    Logging(f"Random seed: {seed}")
+    
+    copy_opt_file(args.config, exp_dir)
+    print_attn_type(Logging=Logging)
+    
+    if accelerator.mixed_precision == 'fp16':
+        Logging("Mixed precision is applied")
+        
+    return dirs, Logging
+
+
+def convert2label(label, is_coco=False):
+    if is_coco:
+        # COCO labels
+        table = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
+            'truck', 'boat', 'traffic light', 'fire hydrant', '-', 'stop sign',
+            'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+            'elephant', 'bear', 'zebra', 'giraffe', '-', 'backpack', 'umbrella', '-', '-',
+            'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
+            'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+            'tennis racket', 'bottle', '-', 'wine glass', 'cup', 'fork', 'knife',
+            'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli',
+            'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant',
+            'bed', '-', 'dining table', '-', '-', 'toilet', '-', 'tv', 'laptop', 'mouse',
+            'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+            'refrigerator', '-', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+            'hair drier', 'toothbrush', '-'
+        ]
+    else:
+        # VOC2012 lables
+        table = [
+            'aeroplane', 'bicycle', 'bird', 'boat' ,'bottle', 'bus', 'car',
+            'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike',
+            'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'
+        ]
 
     return table[label]
 
 
-def draw_box(img, target, score_threshold=0.9, fontsize=0.7, split_acc=False):
+def draw_box(img, target, is_coco=False, score_threshold=0.9, fontsize=0.7, split_acc=False):
     target = target.copy()
     img_tmp = np.array(img.permute(1,2,0).detach().cpu()*255).copy()
     
@@ -42,7 +111,10 @@ def draw_box(img, target, score_threshold=0.9, fontsize=0.7, split_acc=False):
             x1, y1, x2, y2 = target['boxes'][idx]
             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)                
             img_label = int(target['labels'][idx])
-            obj_label = convert2label(img_label-1)
+            obj_label = convert2label(img_label-1, is_coco=is_coco)
+            
+            if obj_label == "-":
+                continue  # Classes not used in detection
             
             if 'scores' in target:
                 obj_label_with_acc = '{}: {:.2f}'.format(obj_label, target['scores'][idx])
@@ -73,7 +145,12 @@ def list_to_batch(img_list, img_size, device):
     img_batch = torch.Tensor().to(device)
     for img in img_list:
         ph, pw = max_h - img.size(1), max_w - img.size(2)
-        img_padded = torch.nn.functional.pad(img.unsqueeze(0), pad=(0, pw, 0, ph))
+        mode = "constant"
+        # if ph < img.size(1) and pw < img.size(2):
+        #     mode = "reflect"
+        # else:
+        #     mode = "constant"
+        img_padded = torch.nn.functional.pad(img.unsqueeze(0), pad=(0, pw, 0, ph), mode=mode)
         img_batch = torch.cat((img_batch, img_padded), dim=0)
         
     return img_batch
@@ -280,13 +357,13 @@ def collate_fn(batch):
 
 def get_coco_api_from_dataset(dataset):
     # FIXME: This is... awful?
-    for _ in range(10):
-        if isinstance(dataset, torchvision.datasets.CocoDetection):
-            break
-        if isinstance(dataset, torch.utils.data.Subset):
-            dataset = dataset.dataset
-    if isinstance(dataset, torchvision.datasets.CocoDetection):
-        return dataset.coco
+    # for _ in range(10):
+    #     if isinstance(dataset, torchvision.datasets.CocoDetection):
+    #         break
+    #     if isinstance(dataset, torch.utils.data.Subset):
+    #         dataset = dataset.dataset
+    # if isinstance(dataset, torchvision.datasets.CocoDetection):
+    #     return dataset.coco
     return convert_to_coco_api(dataset)
 
 
@@ -579,3 +656,66 @@ def get_world_size():
     if not is_dist_avail_and_initialized():
         return 1
     return dist.get_world_size()
+
+@contextmanager
+def suppress_stdout():
+    old_stdout = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    try:
+        yield
+    finally:
+        sys.stdout.close()
+        sys.stdout = old_stdout
+
+
+def sliding_windows(W, H, tile, stride):
+    """Yield (x0, y0, x1, y1) windows that cover the WxH image with overlap."""
+    xs = list(range(0, max(W - tile, 0) + 1, stride))
+    ys = list(range(0, max(H - tile, 0) + 1, stride))
+
+    # ensure last tiles touch the right/bottom edge
+    if xs and xs[-1] + tile < W:
+        xs.append(W - tile)
+    if ys and ys[-1] + tile < H:
+        ys.append(H - tile)
+
+    for y in ys:
+        for x in xs:
+            yield (x, y, x + tile, y + tile)
+
+
+def move_boxes(boxes, dx, dy):
+    """Shift boxes by (dx, dy). boxes: Tensor [N,4] in xyxy."""
+    out = boxes.clone()
+    out[:, [0, 2]] += dx
+    out[:, [1, 3]] += dy
+    return out
+
+
+def prepare_batch(batch, device, batch_transform=None, transform_annot=True):
+    """Prepare raw batch for training"""
+    if batch_transform is None:
+        # Codeformer degradation (used in our paper)
+        # Degradations are applied in the dataloader
+        gt_list, lq_list, annot_list, path_list = batch
+        gt_list = list(rearrange(gt, 'h w c -> c h w').contiguous().float().to(device) for gt in gt_list)
+        lq_list = list(rearrange(lq, 'h w c -> c h w').contiguous().float().to(device) for lq in lq_list)
+        gt_batch = list_to_batch(gt_list, img_size=512, device=device)
+        lq_batch = list_to_batch(lq_list, img_size=512, device=device)
+        
+    else:
+        # Real-esrgan degradation
+        # Degradations are applied through the batch_transform function below
+        gt_list, k1_list, k2_list, sk_list, annot_list, path_list = batch
+        gt_list = list(gt.contiguous().float().to(device) for gt in gt_list)
+        gt_batch = list_to_batch(gt_list, img_size=512, device=device)
+        k1_batch, k2_batch, sk_batch = torch.stack(k1_list, dim=0), torch.stack(k2_list, dim=0), torch.stack(sk_list, dim=0)
+        batch = batch_transform(dict(hq=gt_batch, kernel1=k1_batch, kernel2=k2_batch, sinc_kernel=sk_batch))
+        gt_batch, lq_batch = batch["GT"], batch["LQ"]
+        lq_list = batch_to_list(lq_batch, gt_list)
+        
+    bs = len(gt_list)
+    if transform_annot:
+        annot_list = [{k: v.long().to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in annot_list]
+    
+    return gt_list, lq_list, gt_batch, lq_batch, annot_list, path_list, bs

@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from model.gaussian_diffusion import extract_into_tensor
 from model import ControlLDM
-from utils.common import sliding_windows, gaussian_weights
+from utils.common import make_tiled_fn
 
 
 # https://github.com/openai/guided-diffusion/blob/main/guided_diffusion/respace.py
@@ -182,44 +182,6 @@ class SpacedSampler(nn.Module):
         return model_output
     
     @torch.no_grad()
-    def predict_noise_tiled(
-        self,
-        model: ControlLDM,
-        x: torch.Tensor,
-        t: torch.Tensor,
-        cond: Dict[str, torch.Tensor],
-        uncond: Optional[Dict[str, torch.Tensor]],
-        cfg_scale: float,
-        tile_size: int,
-        tile_stride: int
-    ):
-        _, _, h, w = x.shape
-        tiles = tqdm(sliding_windows(h, w, tile_size // 8, tile_stride // 8), unit="tile", leave=False)
-        eps = torch.zeros_like(x)
-        count = torch.zeros_like(x, dtype=torch.float32)
-        weights = gaussian_weights(tile_size // 8, tile_size // 8)[None, None]
-        weights = torch.tensor(weights, dtype=torch.float32, device=x.device)
-        for hi, hi_end, wi, wi_end in tiles:
-            tiles.set_description(f"Process tile ({hi} {hi_end}), ({wi} {wi_end})")
-            tile_x = x[:, :, hi:hi_end, wi:wi_end]
-            tile_cond = {
-                "c_img": cond["c_img"][:, :, hi:hi_end, wi:wi_end],
-                "c_txt": cond["c_txt"]
-            }
-            if uncond:
-                tile_uncond = {
-                    "c_img": uncond["c_img"][:, :, hi:hi_end, wi:wi_end],
-                    "c_txt": uncond["c_txt"]
-                }
-            tile_eps = self.predict_noise(model, tile_x, t, tile_cond, tile_uncond, cfg_scale)
-            # accumulate noise
-            eps[:, :, hi:hi_end, wi:wi_end] += tile_eps * weights
-            count[:, :, hi:hi_end, wi:wi_end] += weights
-        # average on noise (score)
-        eps.div_(count)
-        return eps
-    
-    @torch.no_grad()
     def p_sample(
         self,
         model: ControlLDM,
@@ -229,14 +191,8 @@ class SpacedSampler(nn.Module):
         cond: Dict[str, torch.Tensor],
         uncond: Optional[Dict[str, torch.Tensor]],
         cfg_scale: float,
-        tiled: bool,
-        tile_size: int,
-        tile_stride: int,
     ) -> torch.Tensor:
-        if tiled:
-            eps = self.predict_noise_tiled(model, x, t, cond, uncond, cfg_scale, tile_size, tile_stride)
-        else:
-            eps = self.predict_noise(model, x, t, cond, uncond, cfg_scale)
+        eps = self.predict_noise(model, x, t, cond, uncond, cfg_scale)
         pred_x0 = self._predict_xstart_from_eps(x, index, eps)
         
         model_mean, model_variance, _ = self.q_posterior_mean_variance(pred_x0, x, index)
@@ -268,6 +224,22 @@ class SpacedSampler(nn.Module):
     ) -> torch.Tensor:
         self.make_schedule(steps)
         self.to(device)
+        if tiled:
+            forward = model.forward
+            model.forward = make_tiled_fn(
+                lambda x_tile, t, cond, hi, hi_end, wi, wi_end: (
+                    forward(
+                        x_tile,
+                        t,
+                        {
+                            "c_txt": cond["c_txt"],
+                            "c_img": cond["c_img"][..., hi:hi_end, wi:wi_end],
+                        },
+                    )
+                ),
+                tile_size,
+                tile_stride,
+            )
         if x_T is None:
             # TODO: not convert to float32, may trigger an error
             img = torch.randn((batch_size, *x_size), device=device)
@@ -281,8 +253,7 @@ class SpacedSampler(nn.Module):
             ts = torch.full((batch_size,), step, device=device, dtype=torch.long)
             index = torch.full_like(ts, fill_value=total_steps - i - 1)
             img, pred_x0 = self.p_sample(
-                model, img, ts, index, cond, uncond,
-                cfg_scale, tiled, tile_size, tile_stride
+                model, img, ts, index, cond, uncond, cfg_scale
             )
             if return_intermediates:
                 intermediates.append(pred_x0)
@@ -302,7 +273,6 @@ class SpacedSampler(nn.Module):
         steps: int,
         used_timesteps: List[int],
         batch_size: int,
-        x_size: Tuple[int],
         cond: Dict[str, torch.Tensor],
         uncond: Dict[str, torch.Tensor],
         cfg_scale: float,
@@ -315,6 +285,22 @@ class SpacedSampler(nn.Module):
     ) -> torch.Tensor:
         self.make_schedule(steps, used_timesteps)
         self.to(device)
+        if tiled:
+            forward = model.forward
+            model.forward = make_tiled_fn(
+                lambda x_tile, t, cond, hi, hi_end, wi, wi_end: (
+                    forward(
+                        x_tile,
+                        t,
+                        {
+                            "c_txt": cond["c_txt"],
+                            "c_img": cond["c_img"][..., hi:hi_end, wi:wi_end],
+                        },
+                    )
+                ),
+                tile_size,
+                tile_stride,
+            )
         img = x_T
         
         timesteps = np.flip(self.timesteps)
@@ -325,8 +311,7 @@ class SpacedSampler(nn.Module):
             ts = torch.full((batch_size,), step, device=device, dtype=torch.long)
             index = torch.full_like(ts, fill_value=total_steps - i - 1)
             img, pred_x0 = self.p_sample(
-                model, img, ts, index, cond, uncond,
-                cfg_scale, tiled, tile_size, tile_stride
+                model, img, ts, index, cond, uncond, cfg_scale
             )
             if return_intermediates:
                 intermediates.append(pred_x0)

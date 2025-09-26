@@ -1,16 +1,15 @@
-import os
-import sys
-import torch
-import safetensors
+import os, sys
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(parent_dir)
+import utils.filter_warning
 
+import torch
 from tqdm import tqdm
 from utils.common import (
-    instantiate_from_config, wavelet_reconstruction,
-    load_network, set_logger, copy_opt_file, calculate_psnr_pt
+    instantiate_from_config, load_network,
+    calculate_psnr_pt, wavelet_reconstruction
 )
-from utils.classification import calculate_accuracy
+from utils.classification import calculate_accuracy, prepare_environment
 from utils.sampler import SpacedSampler
 from model import SwinIR, ControlLDM, Diffusion
 from torch.nn import functional as F
@@ -18,52 +17,31 @@ from torch.utils.data import DataLoader
 from einops import rearrange
 from argparse import ArgumentParser
 from omegaconf import OmegaConf
-from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate import Accelerator, DataLoaderConfiguration
 from torchvision.utils import save_image
 
 
 def main(args) -> None:
-    # Setup accelerator
+    # setup environment
     cfg = OmegaConf.load(args.config)
-    accelerator = Accelerator(split_batches=True, mixed_precision=cfg.test.precision)
-    set_seed(args.seed)
+    accelerator = Accelerator(dataloader_config=DataLoaderConfiguration(split_batches=True),
+                              mixed_precision=cfg.test.precision)
     device = accelerator.device
+    dirs, Logging = prepare_environment(__name__, cfg, args, accelerator)
+    exp_dir = dirs["exp"]
+    if args.save_img:
+        img_dir = dirs["img"]
     
-    def Logging(text, print=True):
-        if accelerator.is_local_main_process:
-            if print:
-                logger.info(text)
-            else:
-                logger.debug(text)
-
-    # Setup an experiment folder
-    exp_dir = cfg.test.exp_dir
-    if accelerator.is_local_main_process:
-        os.makedirs(exp_dir, exist_ok=True)
-        logger = set_logger(__name__, exp_dir, logger_name=f"logger_test_s{args.seed}.log")
-        copy_opt_file(args.config, exp_dir)
-        Logging(f"Experiment directory created at {exp_dir}")
-        if args.save_img and accelerator.is_local_main_process:
-            img_dir = os.path.join(exp_dir, f'results_s{args.seed}', 'img')
-            os.makedirs(img_dir, exist_ok=True)
-        Logging(f"Random seed: {args.seed}")
-    
-    # Create models
+    # create and load models
     swinir: SwinIR = instantiate_from_config(cfg.model.swinir)
+    if cfg.test.resume_swinir is None:
+        cfg.test.resume_swinir = os.path.join(exp_dir, 'checkpoints', 'swinir_last.pt')
     swinir.load_state_dict(torch.load(cfg.test.resume_swinir, map_location="cpu"), strict=True)
     Logging(f"Load SwinIR weight from checkpoint: {cfg.test.resume_swinir}")
     
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
-    if 'turbo' in cfg.test.sd_path:
-        sd = safetensors.torch.load_file(cfg.test.sd_path, device="cpu")
-        unused = cldm.load_pretrained_sd(sd, is_turbo=True)
-        Logging(f"Stable Diffusion **TURBO** is using")    
-    else:
-        sd = torch.load(cfg.test.sd_path, map_location="cpu")["state_dict"]
-        unused = cldm.load_pretrained_sd(sd)
-    Logging(f"Load pretrained SD weight from {cfg.test.sd_path}")
-        
+    sd = torch.load(cfg.test.sd_path, map_location="cpu")["state_dict"]
+    cldm.load_pretrained_sd(sd)
     if cfg.test.resume_cldm is None:
         cfg.test.resume_cldm = os.path.join(exp_dir, 'checkpoints', 'cldm_last.pt')
     cldm.load_controlnet_from_ckpt(torch.load(cfg.test.resume_cldm, map_location="cpu"))
@@ -81,11 +59,10 @@ def main(args) -> None:
     clsnet = load_network(clsnet, cfg.test.resume_clsnet, strict=True)
     Logging(f"Load ClassificationNetwork weight from checkpoint: {cfg.test.resume_clsnet}")
     
-    # Diffusion functions
     diffusion: Diffusion = instantiate_from_config(cfg.model.diffusion)
     sampler = SpacedSampler(diffusion.betas)
     
-    # Setup data
+    # setup data
     val_dataset = instantiate_from_config(cfg.dataset.val)
     val_loader = DataLoader(
         dataset=val_dataset, batch_size=cfg.test.batch_size,
@@ -94,7 +71,7 @@ def main(args) -> None:
     )
     Logging(f"Validation dataset contains {len(val_dataset):,} images from {val_dataset.root}")
 
-    # Prepare models for testing
+    # prepare models, testing logs
     swinir.eval().to(device)
     cldm.eval().to(device)
     teacher_clsnet.eval().to(device)
@@ -102,11 +79,9 @@ def main(args) -> None:
     diffusion.to(device)
     swinir, cldm, teacher_clsnet, clsnet, val_loader = accelerator.prepare(swinir, cldm, teacher_clsnet, clsnet, val_loader)
     pure_cldm: ControlLDM = accelerator.unwrap_model(cldm)
-    
-    # Evaluation
-    if accelerator.mixed_precision == 'fp16':
-        Logging("Mixed precision is applied")
     val_psnr, val_acc1, val_fd = [], [], []
+    
+    # Testing:
     Logging(f"Testing start...")
     val_pbar = tqdm(iterable=None, disable=not accelerator.is_local_main_process, unit="batch",
                     total=len(val_loader), leave=False, desc="Validation")
@@ -117,7 +92,7 @@ def main(args) -> None:
         val_prompt = [cfg.test.default_prompt] * val_bs
         
         with torch.no_grad():
-            # Restoration
+            # restoration
             val_pre_res = swinir(val_lq)
             val_cond = pure_cldm.prepare_condition(val_pre_res, val_prompt)
             val_z = sampler.sample(
@@ -127,10 +102,10 @@ def main(args) -> None:
             )
             val_res = wavelet_reconstruction((pure_cldm.vae_decode(val_z) + 1) / 2, val_pre_res)
             
-            # Clasification
+            # clasification
             val_pred = clsnet(val_res)
             
-            # Calculate feature-distance
+            # calculate feature-distance
             if args.calc_fd:
                 _, feat_gt = teacher_clsnet(val_gt, return_feat=True)
                 _, feat_res = teacher_clsnet(val_res, return_feat=True)
@@ -140,7 +115,7 @@ def main(args) -> None:
                 val_gt, val_res, val_pred, val_label = \
                     accelerator.gather_for_metrics((val_gt, val_res, val_pred, val_label))
             
-            # Save images
+            # save images
             if args.save_img and accelerator.is_local_main_process:
                 for idx, basename in enumerate(val_path):
                     basename = "{:03d}.".format(val_label[idx]+1) + os.path.basename(basename)
@@ -148,7 +123,7 @@ def main(args) -> None:
                     img_name = os.path.splitext(os.path.join(img_dir, basename))[0] + cls_cmp + ".png"
                     save_image(val_res[idx], img_name)
             
-            # Calculate metrics
+            # calculate metrics
             if accelerator.is_local_main_process:
                 val_psnr += calculate_psnr_pt(val_res, val_gt, crop_border=0).tolist()
                 val_acc1 += [calculate_accuracy(val_pred, val_label, topk=(1, 5))[0]] * val_gt.size(0)

@@ -16,7 +16,7 @@ def disabled_train(self: nn.Module) -> nn.Module:
 
 def nonlinearity(x):
     # swish
-    return x*torch.sigmoid(x)
+    return x * torch.sigmoid(x)
 
 
 def Normalize(in_channels, num_groups=32):
@@ -28,11 +28,9 @@ class Upsample(nn.Module):
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
-            self.conv = torch.nn.Conv2d(in_channels,
-                                        in_channels,
-                                        kernel_size=3,
-                                        stride=1,
-                                        padding=1)
+            self.conv = torch.nn.Conv2d(
+                in_channels, in_channels, kernel_size=3, stride=1, padding=1
+            )
 
     def forward(self, x):
         x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
@@ -326,10 +324,23 @@ def make_attn(in_channels, attn_type="vanilla", attn_kwargs=None):
 
 
 class Encoder(nn.Module):
-    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks,
-                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
-                 resolution, z_channels, double_z=True, use_linear_attn=False,
-                 downscale=1, zero_init=False, sigmoid=False, **ignore_kwargs):
+    def __init__(
+        self,
+        *,
+        ch,
+        out_ch,
+        ch_mult=(1, 2, 4, 8),
+        num_res_blocks,
+        attn_resolutions,
+        dropout=0.0,
+        resamp_with_conv=True,
+        in_channels,
+        resolution,
+        z_channels,
+        double_z=True,
+        use_linear_attn=False,
+        **ignore_kwargs,
+    ):
         super().__init__()
         ### setup attention type
         if Config.attn_mode == AttnMode.SDP:
@@ -338,94 +349,88 @@ class Encoder(nn.Module):
             attn_type = "xformers"
         else:
             attn_type = "vanilla"
-        if use_linear_attn: attn_type = "linear"
+        if use_linear_attn:
+            attn_type = "linear"
         self.ch = ch
         self.temb_ch = 0
         self.num_resolutions = len(ch_mult)
-        if isinstance(num_res_blocks, int):
-            num_res_blocks = [num_res_blocks for _ in range(self.num_resolutions)]
         self.num_res_blocks = num_res_blocks
         self.resolution = resolution
         self.in_channels = in_channels
-        self.downscale = downscale
-        self.sigmoid = sigmoid
 
         # downsampling
-        self.conv_in = torch.nn.Conv2d(in_channels,
-                                       self.ch,
-                                       kernel_size=3,
-                                       stride=1,
-                                       padding=1)
+        self.conv_in = torch.nn.Conv2d(
+            in_channels, self.ch, kernel_size=3, stride=1, padding=1
+        )
 
         curr_res = resolution
-        in_ch_mult = (1,)+tuple(ch_mult)
+        in_ch_mult = (1,) + tuple(ch_mult)
         self.in_ch_mult = in_ch_mult
         self.down = nn.ModuleList()
         for i_level in range(self.num_resolutions):
             block = nn.ModuleList()
             attn = nn.ModuleList()
-            block_in = ch*in_ch_mult[i_level]
-            block_out = ch*ch_mult[i_level]
-            for i_block in range(self.num_res_blocks[i_level]):
-                block.append(ResnetBlock(in_channels=block_in,
-                                         out_channels=block_out,
-                                         temb_channels=self.temb_ch,
-                                         dropout=dropout))
+            block_in = ch * in_ch_mult[i_level]
+            block_out = ch * ch_mult[i_level]
+            for i_block in range(self.num_res_blocks):
+                block.append(
+                    ResnetBlock(
+                        in_channels=block_in,
+                        out_channels=block_out,
+                        temb_channels=self.temb_ch,
+                        dropout=dropout,
+                    )
+                )
                 block_in = block_out
                 if curr_res in attn_resolutions:
                     attn.append(make_attn(block_in, attn_type=attn_type))
             down = nn.Module()
             down.block = block
             down.attn = attn
-            if i_level != self.num_resolutions-1:
+            if i_level != self.num_resolutions - 1:
                 down.downsample = Downsample(block_in, resamp_with_conv)
                 curr_res = curr_res // 2
             self.down.append(down)
 
         # middle
         self.mid = nn.Module()
-        self.mid.block_1 = ResnetBlock(in_channels=block_in,
-                                       out_channels=block_in,
-                                       temb_channels=self.temb_ch,
-                                       dropout=dropout)
+        self.mid.block_1 = ResnetBlock(
+            in_channels=block_in,
+            out_channels=block_in,
+            temb_channels=self.temb_ch,
+            dropout=dropout,
+        )
         self.mid.attn_1 = make_attn(block_in, attn_type=attn_type)
-        self.mid.block_2 = ResnetBlock(in_channels=block_in,
-                                       out_channels=block_in,
-                                       temb_channels=self.temb_ch,
-                                       dropout=dropout)
+        self.mid.block_2 = ResnetBlock(
+            in_channels=block_in,
+            out_channels=block_in,
+            temb_channels=self.temb_ch,
+            dropout=dropout,
+        )
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(block_in,
-                                        2*z_channels if double_z else z_channels,
-                                        kernel_size=3,
-                                        stride=1,
-                                        padding=1)
-        
-        if zero_init:
-            with torch.no_grad():
-                self.conv_out.weight.zero_()
-                self.conv_out.bias.zero_()
-        
-        if sigmoid:
-            with torch.no_grad():
-                self.conv_out.weight.zero_()
-                self.conv_out.bias.fill_(1.0)
-            self.sigmoid = torch.nn.Sigmoid()
-            
-    def forward(self, x, restoration=None):
+        self.conv_out = torch.nn.Conv2d(
+            block_in,
+            2 * z_channels if double_z else z_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
+
+    def forward(self, x):
         # timestep embedding
         temb = None
 
         # downsampling
         hs = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
-            for i_block in range(self.num_res_blocks[i_level]):
+            for i_block in range(self.num_res_blocks):
                 h = self.down[i_level].block[i_block](hs[-1], temb)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
                 hs.append(h)
-            if i_level != self.num_resolutions-1:
+            if i_level != self.num_resolutions - 1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
 
         # middle
@@ -433,17 +438,11 @@ class Encoder(nn.Module):
         h = self.mid.block_1(h, temb)
         h = self.mid.attn_1(h)
         h = self.mid.block_2(h, temb)
-        if restoration is not None:
-            h = restoration(h)
 
         # end
         h = self.norm_out(h)
         h = nonlinearity(h)
         h = self.conv_out(h)
-        
-        if self.sigmoid:
-            h = self.sigmoid(h)
-        
         return h
 
 
@@ -723,44 +722,22 @@ class AutoencoderKL(nn.Module):
         unused = set(sd.keys()) - used
         return unused
     
-    def encode(self, x, restoration=None, return_moments=False):
-        h = self.encoder(x, restoration)
+    def encode(self, x):
+        h = self.encoder(x)
         moments = self.quant_conv(h)
         posterior = DiagonalGaussianDistribution(moments)
-        if return_moments:
-            return posterior, moments
-        else:
-            return posterior
+        return posterior
     
     def decode(self, z):
         z = self.post_quant_conv(z)
         dec = self.decoder(z)
         return dec
     
-    def forward(self, input, sample_posterior=True, mode="encode+decode", restoration=None):
-        assert mode in ["encode", "decode", "encode+decode"]
-        
-        if mode == "encode":
-            posterior, moments = self.encode(input, restoration, return_moments=True)
-            return posterior, moments
-        
-        elif mode == "decode":
-            if sample_posterior:
-                z = input.sample()
-            else:
-                z = input.mode()
-            dec = self.decode(z)
-            return dec
-                
-        elif mode == "encode+decode":
-            posterior = self.encode(input, restoration)
-            if sample_posterior:
-                z = posterior.sample()
-            else:
-                z = posterior.mode()
-            dec = self.decode(z)
-            return dec, posterior
-        
+    def forward(self, input, sample_posterior=True):
+        posterior = self.encode(input)
+        if sample_posterior:
+            z = posterior.sample()
         else:
-            raise NotImplementedError
- 
+            z = posterior.mode()
+        dec = self.decode(z)
+        return dec, posterior

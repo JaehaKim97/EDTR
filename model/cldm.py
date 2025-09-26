@@ -3,11 +3,9 @@ from typing import Tuple, Set, List, Dict
 import torch
 from torch import nn
 
-from model import (
-    ControlledUnetModel, ControlNet,
-    AutoencoderKL, FrozenOpenCLIPEmbedder
-)
-from utils.common import sliding_windows, count_vram_usage, gaussian_weights
+from model import ControlledUnetModel, ControlNet, AutoencoderKL, FrozenOpenCLIPEmbedder
+from model.distributions import DiagonalGaussianDistribution
+from utils.tilevae import VAEHook
 
 
 def disabled_train(self: nn.Module) -> nn.Module:
@@ -106,48 +104,57 @@ class ControlLDM(nn.Module):
         self.controlnet.load_state_dict(init_sd, strict=True)
         return init_with_new_zero, init_with_scratch
     
-    def vae_encode(self, image: torch.Tensor, sample: bool=True, noise=None, return_noise=False) -> torch.Tensor:
-        if sample:
-            if return_noise:
-                out, noise = self.vae.encode(image).sample(noise, return_noise=True)
-                return out * self.scale_factor, noise
-            else:
-                return self.vae.encode(image).sample(noise) * self.scale_factor
+    def vae_encode(
+        self,
+        image: torch.Tensor,
+        sample: bool = True,
+        tiled: bool = False,
+        tile_size: int = -1,
+    ) -> torch.Tensor:
+        if tiled:
+            def encoder(x: torch.Tensor) -> DiagonalGaussianDistribution:
+                h = VAEHook(
+                    self.vae.encoder,
+                    tile_size=tile_size,
+                    is_decoder=False,
+                    fast_decoder=False,
+                    fast_encoder=False,
+                    color_fix=True,
+                )(x)
+                moments = self.vae.quant_conv(h)
+                posterior = DiagonalGaussianDistribution(moments)
+                return posterior
         else:
-            return self.vae.encode(image).mode() * self.scale_factor
-    
-    def vae_encode_tiled(self, image: torch.Tensor, tile_size: int, tile_stride: int, sample: bool=True) -> torch.Tensor:
-        bs, _, h, w = image.shape
-        z = torch.zeros((bs, 4, h // 8, w // 8), dtype=torch.float32, device=image.device)
-        count = torch.zeros_like(z, dtype=torch.float32)
-        weights = gaussian_weights(tile_size // 8, tile_size // 8)[None, None]
-        weights = torch.tensor(weights, dtype=torch.float32, device=image.device)
-        tiles = sliding_windows(h // 8, w // 8, tile_size // 8, tile_stride // 8)
-        for hi, hi_end, wi, wi_end in tiles:
-            tile_image = image[:, :, hi * 8:hi_end * 8, wi * 8:wi_end * 8]
-            z[:, :, hi:hi_end, wi:wi_end] += self.vae_encode(tile_image, sample=sample) * weights
-            count[:, :, hi:hi_end, wi:wi_end] += weights
-        z.div_(count)
+            encoder = self.vae.encode
+
+        if sample:
+            z = encoder(image).sample() * self.scale_factor
+        else:
+            z = encoder(image).mode() * self.scale_factor
         return z
     
-    def vae_decode(self, z: torch.Tensor) -> torch.Tensor:
-        return self.vae.decode(z / self.scale_factor)
+    def vae_decode(
+        self,
+        z: torch.Tensor,
+        tiled: bool = False,
+        tile_size: int = -1,
+    ) -> torch.Tensor:
+        if tiled:
+            def decoder(z):
+                z = self.vae.post_quant_conv(z)
+                dec = VAEHook(
+                    self.vae.decoder,
+                    tile_size=tile_size,
+                    is_decoder=True,
+                    fast_decoder=False,
+                    fast_encoder=False,
+                    color_fix=True,
+                )(z)
+                return dec
+        else:
+            decoder = self.vae.decode
+        return decoder(z / self.scale_factor)
     
-    @count_vram_usage
-    def vae_decode_tiled(self, z: torch.Tensor, tile_size: int, tile_stride: int) -> torch.Tensor:
-        bs, _, h, w = z.shape
-        image = torch.zeros((bs, 3, h * 8, w * 8), dtype=torch.float32, device=z.device)
-        count = torch.zeros_like(image, dtype=torch.float32)
-        weights = gaussian_weights(tile_size * 8, tile_size * 8)[None, None]
-        weights = torch.tensor(weights, dtype=torch.float32, device=z.device)
-        tiles = sliding_windows(h, w, tile_size, tile_stride)
-        for hi, hi_end, wi, wi_end in tiles:
-            tile_z = z[:, :, hi:hi_end, wi:wi_end]
-            image[:, :, hi * 8:hi_end * 8, wi * 8:wi_end * 8] += self.vae_decode(tile_z) * weights
-            count[:, :, hi * 8:hi_end * 8, wi * 8:wi_end * 8] += weights
-        image.div_(count)
-        return image
-
     def prepare_condition(self, clean: torch.Tensor, prompt: List[str]) -> Dict[str, torch.Tensor]:
         if prompt is None:
             prompt = [""] * clean.size(0)
@@ -156,13 +163,6 @@ class ControlLDM(nn.Module):
             c_img=self.vae_encode(clean * 2 - 1, sample=False)
         )
     
-    @count_vram_usage
-    def prepare_condition_tiled(self, clean: torch.Tensor, txt: List[str], tile_size: int, tile_stride: int) -> Dict[str, torch.Tensor]:
-        return dict(
-            c_txt=self.clip.encode(txt),
-            c_img=self.vae_encode_tiled(clean * 2 - 1, tile_size, tile_stride, sample=False)
-        )
-
     def forward(self, x_noisy, t, cond, woSD=False):
         c_txt = cond["c_txt"]
         c_img = cond["c_img"]

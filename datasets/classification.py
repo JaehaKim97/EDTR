@@ -41,6 +41,7 @@ class DegradedClassificationDataset(ImageFolder):
         noise_range: Sequence[float],
         jpeg_range: Sequence[int],
         data_length: int = -1,
+        random_index: bool = False,
     ) -> "DegradedClassificationDataset":
         super(DegradedClassificationDataset, self).__init__(root)
         self.file_backend = instantiate_from_config(file_backend_cfg)
@@ -59,6 +60,7 @@ class DegradedClassificationDataset(ImageFolder):
         self.noise_range = noise_range
         self.jpeg_range = jpeg_range
         self.data_length = data_length
+        self.random_index = random_index
         
     def load_gt_image(self, image_path: str, max_retry: int=5) -> Optional[np.ndarray]:
         image_bytes = None
@@ -95,6 +97,8 @@ class DegradedClassificationDataset(ImageFolder):
 
     def __getitem__(self, index: int, max_retry: int=5) -> Dict[str, torch.Tensor]:
         index = index % len(self.imgs)
+        if self.random_index:
+            index = random.randint(0, len(self.imgs) - 1)
         # load gt image
         img_gt = None
         while img_gt is None:
@@ -145,7 +149,7 @@ class DegradedClassificationDataset(ImageFolder):
         return gt, lq, label, gt_path
         
     def __len__(self) -> int:
-        if self.data_length > len(self.imgs):
+        if self.data_length > 0:
             return self.data_length
         else:
             return len(self.imgs)
