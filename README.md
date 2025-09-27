@@ -4,7 +4,7 @@
 
 [Jaeha Kim](https://jaehakim97.github.io/), [Junghun Oh](https://cv.snu.ac.kr/index.php/students/), [Kyoung Mu Lee](https://cv.snu.ac.kr/index.php/kmlee/)
 
-*Seoul Nataional University, Korea*
+*Seoul National University, Korea*
 
 :bookmark_tabs: **TL;DR**: We propose a diffusion-based image restoration method that benefits high-level vision tasks.
 
