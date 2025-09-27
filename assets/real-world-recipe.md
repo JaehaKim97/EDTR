@@ -15,12 +15,12 @@ You can run training with the following commands:
 
 ```shell
 # codeformer degradation
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --main_process_port 4177 main/det/train_swinir-pre.py --config configs/det/coco/train-release/000_swinir-pre.yaml  # pre-restoration
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 4177 main/det/train_edtr.py --config configs/det/coco/train-release/001_edtr-s4-r50.yaml  # edtr
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --main_process_port 4177 main/det/train_swinir-pre.py --config configs/det/coco/train/000_swinir-pre.yaml  # pre-restoration
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 4177 main/det/train_edtr.py --config configs/det/coco/train/001_edtr-s4-r50.yaml  # edtr
 
 # real-esrgan degradation
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --main_process_port 4177 main/det/train_swinir-pre.py --config configs/det/coco/train-release/100_swinir-pre-v2.yaml  # pre-restoration 
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 4177 main/det/train_edtr.py --config configs/det/coco/train/101_oracle-r50v2.yaml  # edtr
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --main_process_port 4177 main/det/train_swinir-pre.py --config configs/det/coco/train/100_swinir-pre-v2.yaml  # pre-restoration 
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 4177 main/det/train_edtr.py --config configs/det/coco/train/101_edtr-s4-r50v2.yaml  # edtr
 ```
 
 *NOTE*: You can download the pretrained detection model weights for `FasterRCNN_ResNet50_FPN_V2` by referring [here](https://docs.pytorch.org/vision/main/models.html).
