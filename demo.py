@@ -23,21 +23,21 @@ from torchvision.utils import save_image
 
 
 def main(args) -> None:
-    # Setup accelerator
+    # setup environment
     cfg = OmegaConf.load("configs/det/demo.yaml")
     accelerator = Accelerator(mixed_precision=args.precision)
+    if accelerator.mixed_precision == 'fp16':
+        print("Mixed precision is applied")
     set_seed(args.seed)
     device = accelerator.device
     is_coco = True if cfg.dataset.get('is_coco') else False
-    
-    # Setup an experiment folder
     img_dir = os.path.join(f'{args.output}/img')
     box_dir = os.path.join(f'{args.output}/box')
     os.makedirs(box_dir, exist_ok=True)
     os.makedirs(img_dir, exist_ok=True)
     print(f"Random seed: {args.seed}")
 
-    # Create and loading models
+    # create and load models
     swinir = instantiate_from_config(cfg.model.swinir)
     cldm = instantiate_from_config(cfg.model.cldm)
     detnet = instantiate_from_config(cfg.model.detnet)
@@ -53,7 +53,7 @@ def main(args) -> None:
     cldm.vae.decoder.load_state_dict(edtr_weight["decoder"])
     detnet.load_state_dict(edtr_weight["detnet"], strict=True)
     
-    # Prepare images
+    # prepare input images
     exts = ["png", "jpg", "jpeg", "JPG", "JPEG"]
     img_paths = sorted(sum([glob(os.path.join(args.input, f"*.{e}")) for e in exts], []))
     
@@ -72,9 +72,6 @@ def main(args) -> None:
     pure_cldm = accelerator.unwrap_model(cldm)
     
     # testing
-    if accelerator.mixed_precision == 'fp16':
-        print("Mixed precision is applied")
-    
     print(f"Testing start...")
     pbar = tqdm(img_paths)
     for img_path in pbar:
