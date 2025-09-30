@@ -30,7 +30,9 @@ def main(args) -> None:
         dataset=dataset, batch_size=cfg.val.batch_size, shuffle=False,
         num_workers=cfg.val.num_workers, pin_memory=True, collate_fn=collate_fn
     )
-    batch_transform = instantiate_from_config(cfg.dataset.batch_transform)
+    batch_transform = None
+    if cfg.dataset.get("batch_transform"):
+        batch_transform = instantiate_from_config(cfg.dataset.batch_transform)
     logger.info(f"Validation dataset contains {len(dataset):,} images from {dataset.root}")
 
     # Making dataset:
