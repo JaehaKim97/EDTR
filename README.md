@@ -22,6 +22,8 @@
 
 Instructions are provided below. Try it with your own images! :smile:
 
+If you find EDTR useful, please star the repo. Thank you! :star::pray: 
+
 ## <a name="update"></a>:loudspeaker: Update
 
 - **2025.09.26**: Release the real-world EDTR detection model and demo examples. The code has also been simplified.  
