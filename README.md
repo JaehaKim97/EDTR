@@ -41,7 +41,11 @@ pip install -r requirements.txt
 python setup.py
 ```
 
-Note that it will automatically download the pre-trained [Stable Diffusion v2.1](https://huggingface.co/stabilityai/stable-diffusion-2-1-base) weights.
+~~Note that it will automatically download the pre-trained [Stable Diffusion v2.1](https://huggingface.co/stabilityai/stable-diffusion-2-1-base) weights.~~
+
+(*2026.01.08*) It seems that Stable Diffusion 2.1 checkpoints are no longer publicly downloadable from Hugging Face.
+If you have obtained the official Stable Diffusion 2.1 checkpoint (i.e., `v2-1_512-nonema-pruned.ckpt`),
+place it under the `weights/` directory to use this project; the code should then work as expected.
 
 ## <a name="quick_start"></a>:rocket: Quick start
 
