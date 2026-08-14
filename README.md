@@ -12,6 +12,8 @@
 - **2025.09.26**: Release the real-world EDTR detection model and demo examples. The code has also been simplified.  
 - **2025.09.01**: The code is released.
 
+---
+
 :bookmark_tabs: **TL;DR**: We propose a diffusion-based image restoration method that benefits high-level vision tasks.
 
 <p align="center">
