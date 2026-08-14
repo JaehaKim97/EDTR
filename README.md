@@ -6,6 +6,12 @@
 
 *Seoul National University, Korea*
 
+## <a name="update"></a>:loudspeaker: Update
+
+- **2026.08.13**: Our follow-up work [NOLA-IR](https://arxiv.org/abs/2607.25390) — faster, stronger, and extended to OCR — is now available! :sparkles: The code is released [here](https://github.com/JaehaKim97/NOLA-IR).
+- **2025.09.26**: Release the real-world EDTR detection model and demo examples. The code has also been simplified.  
+- **2025.09.01**: The code is released.
+
 :bookmark_tabs: **TL;DR**: We propose a diffusion-based image restoration method that benefits high-level vision tasks.
 
 <p align="center">
@@ -23,11 +29,6 @@
 Instructions are provided below. Try it with your own images! :smile:
 
 If you find EDTR useful, please star the repo. Thank you! :star::pray: 
-
-## <a name="update"></a>:loudspeaker: Update
-
-- **2025.09.26**: Release the real-world EDTR detection model and demo examples. The code has also been simplified.  
-- **2025.09.01**: The code is released.
 
 ## <a name="installation"></a>:gear: Installation
 
